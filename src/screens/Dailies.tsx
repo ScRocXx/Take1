@@ -9,13 +9,14 @@ export function Dailies() {
   const ranges = useStore((s) => s.ranges);
   const chapters = useStore((s) => s.chapters);
   const outtakes = useStore((s) => s.outtakes);
+  const transcript = useStore((s) => s.transcript);
+  const transcribing = useStore((s) => s.transcribing);
   const [url, setUrl] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [t, setT] = useState(0);
   const [editing, setEditing] = useState<RangeInfo | null>(null);
   const [playing, setPlaying] = useState<{ url: string | null; take: number } | null>(null);
   const video = useRef<HTMLVideoElement>(null);
-  const lines = useMemo(() => director.transcript(), [duration]);
   const holds = ranges.filter((r) => r.kind === 'hold');
   const redacts = ranges.filter((r) => r.kind === 'redact');
   const saved = holds.reduce((a, r) => a + (r.wall ?? 0) - (r.end - r.start), 0);
@@ -25,6 +26,7 @@ export function Dailies() {
       .previewMp4()
       .then(setUrl)
       .catch((e) => setErr(String(e)));
+    director.transcribe();
   }, []);
 
   const seek = (s: number) => {
@@ -32,16 +34,18 @@ export function Dailies() {
     setT(s);
   };
 
-  const thumbs = useMemo(() => {
-    const n = 12;
-    return Array.from({ length: n }, (_, i) => {
-      const at = (duration * (i + 0.5)) / n;
-      return { at, url: director.snapAt(at)?.url };
-    });
-  }, [duration]);
+  const thumbs = useMemo(
+    () =>
+      Array.from({ length: 12 }, (_, i) => {
+        const at = (duration * (i + 0.5)) / 12;
+        return { at, url: director.snapAt(at)?.url };
+      }),
+    [duration],
+  );
 
   const splices = outtakes.map((o) => o.from).filter((f) => f > 0.1 && f < duration);
   const activeRedacts = redacts.filter((r) => t >= r.start && t <= r.end);
+  const pct = (x: number) => `${(x / Math.max(duration, 0.01)) * 100}%`;
 
   const playOuttake = async (id: string, take: number) => {
     setPlaying({ url: null, take });
@@ -51,79 +55,73 @@ export function Dailies() {
 
   return (
     <main className="dailies">
-      <header className="screen-head dh">
+      <header className="screen-head row-head">
         <div>
-          <p className="eyebrow">Dailies</p>
+          <p className="overline">Dailies</p>
           <h1>
             Here’s your <em>take.</em>
           </h1>
         </div>
-        <div className="stats">
-          <div>
-            <strong>{clock(duration)}</strong>
-            <span>final cut</span>
-          </div>
-          <div>
-            <strong>{outtakes.length}</strong>
-            <span>lines retaken</span>
-          </div>
-          <div>
-            <strong>{Math.round(saved)} s</strong>
-            <span>dead air held</span>
-          </div>
-          <div>
-            <strong>{redacts.length}</strong>
-            <span>redactions</span>
-          </div>
-        </div>
         <Button kind="primary" onClick={() => store.set({ screen: 'wrap' })}>
-          Print it →
+          Print it
         </Button>
       </header>
+
+      <div className="stats-panel">
+        <div>
+          <strong>{clock(duration)}</strong>
+          <span>final cut</span>
+        </div>
+        <div>
+          <strong>{outtakes.length}</strong>
+          <span>lines retaken live</span>
+        </div>
+        <div>
+          <strong>{Math.round(saved)} s</strong>
+          <span>of waiting squeezed out</span>
+        </div>
+        <div>
+          <strong>0 min</strong>
+          <span>in an editor</span>
+        </div>
+      </div>
 
       <section className="dailies-grid">
         <div className="player-col">
           <div className="player" style={{ aspectRatio: `${director.comp.W} / ${director.comp.H}` }}>
-            {url ? (
-              <video ref={video} src={url} controls onTimeUpdate={(e) => setT(e.currentTarget.currentTime)} />
-            ) : (
-              <div className="splicing">{err ? `Couldn’t build the preview: ${err}` : 'Splicing the tape…'}</div>
-            )}
+            {url ? <video ref={video} src={url} controls onTimeUpdate={(e) => setT(e.currentTarget.currentTime)} /> : <div className="splicing">{err ? `Couldn’t build the preview: ${err}` : 'Splicing the tape…'}</div>}
             {activeRedacts.map((r) => (
-              <div
-                key={r.id}
-                className="redact-box"
-                style={{ left: `${r.rect!.x * 100}%`, top: `${r.rect!.y * 100}%`, width: `${r.rect!.w * 100}%`, height: `${r.rect!.h * 100}%` }}
-              >
-                <span>BLURRED ON EXPORT</span>
+              <div key={r.id} className="redact-box" style={{ left: `${r.rect!.x * 100}%`, top: `${r.rect!.y * 100}%`, width: `${r.rect!.w * 100}%`, height: `${r.rect!.h * 100}%` }}>
+                <span>Blurred on export</span>
               </div>
             ))}
           </div>
 
-          <div className="timeline" onClick={(e) => {
-            const r = e.currentTarget.getBoundingClientRect();
-            seek(((e.clientX - r.left) / r.width) * duration);
-          }}>
+          <div
+            className="timeline"
+            onClick={(e) => {
+              const r = e.currentTarget.getBoundingClientRect();
+              seek(((e.clientX - r.left) / r.width) * duration);
+            }}
+          >
+            <div className="tl-strip">
+              {thumbs.map((th, i) => (
+                <span key={i} style={{ backgroundImage: th.url ? `url(${th.url})` : undefined }} />
+              ))}
+            </div>
             {holds.map((r) => (
-              <i key={r.id} className="tl-hold" style={{ left: `${(r.start / duration) * 100}%`, width: `${((r.end - r.start) / duration) * 100}%` }} title={`Held ${Math.round(r.wall ?? 0)} s`} />
+              <i key={r.id} className="tl-hold" style={{ left: pct(r.start), width: pct(r.end - r.start) }} title={`Held ${Math.round(r.wall ?? 0)} s`} />
             ))}
             {redacts.map((r) => (
-              <i key={r.id} className="tl-redact" style={{ left: `${(r.start / duration) * 100}%`, width: `${((r.end - r.start) / duration) * 100}%` }} />
+              <i key={r.id} className="tl-redact" style={{ left: pct(r.start), width: pct(r.end - r.start) }} />
             ))}
             {splices.map((f, i) => (
-              <i key={i} className="tl-splice" style={{ left: `${(f / duration) * 100}%` }} title="Splice" />
+              <i key={i} className="tl-splice" style={{ left: pct(f) }} title="Splice" />
             ))}
             {chapters.map((c) => (
-              <i key={c.id} className="tl-chapter" style={{ left: `${(c.t / duration) * 100}%` }} title={c.name} />
+              <i key={c.id} className="tl-chapter" style={{ left: pct(c.t) }} title={c.name} />
             ))}
-            <i className="tl-head" style={{ left: `${(t / Math.max(duration, 0.01)) * 100}%` }} />
-          </div>
-          <div className="filmstrip">
-            {thumbs.map((th, i) => (
-              <button key={i} onClick={() => seek(th.at)} style={{ backgroundImage: th.url ? `url(${th.url})` : undefined }}>
-                <span>{clock(th.at)}</span>
-              </button>
-            ))}
+            <i className="tl-head" style={{ left: pct(t) }} />
           </div>
           <div className="legend">
             <span className="lg-splice">Splice</span>
@@ -132,10 +130,9 @@ export function Dailies() {
             <span className="lg-chapter">Chapter</span>
           </div>
 
-          <div className="outtakes">
-            <h3>
-              Outtakes <span>every mistake this video survived</span>
-            </h3>
+          <section className="outtakes">
+            <h3>Outtakes</h3>
+            <p className="muted small">Every line you retook. None of it is in the cut.</p>
             {outtakes.length ? (
               <div className="ot-lane">
                 {outtakes.map((o) => (
@@ -147,30 +144,28 @@ export function Dailies() {
                       <strong>Take {o.take}</strong>
                       <span>{(o.to - o.from).toFixed(1)} s</span>
                     </div>
-                    <p>{o.text ? `“${o.text}”` : 'No words caught'}</p>
+                    <p>{o.text ? `“${o.text}”` : 'Tap to watch'}</p>
                   </button>
                 ))}
               </div>
             ) : (
-              <p className="fine">Clean run. Not a single Cut.</p>
+              <p className="muted">Clean run. Not one cut.</p>
             )}
-          </div>
+          </section>
         </div>
 
-        <aside className="dailies-side">
+        <aside className="side">
           <div className="card">
             <h3>Transcript</h3>
             <div className="transcript">
-              {lines.length ? (
-                lines.map((l, i) => (
-                  <button key={i} className={t >= l.start && t < l.end ? 'now' : ''} onClick={() => seek(l.start)}>
-                    <span>{clock(l.start)}</span>
-                    {l.text}
-                  </button>
-                ))
-              ) : (
-                <p className="fine">No narration was transcribed.</p>
-              )}
+              {transcribing && <p className="muted small">Transcribing on your device…</p>}
+              {transcript?.map((l, i) => (
+                <button key={i} className={t >= l.start && t < l.end ? 'now' : ''} onClick={() => seek(l.start)}>
+                  <time>{clock(l.start)}</time>
+                  {l.text}
+                </button>
+              ))}
+              {transcript && !transcript.length && !transcribing && <p className="muted small">No narration found, or the voice engine isn’t available.</p>}
             </div>
           </div>
           <div className="card">
@@ -179,14 +174,11 @@ export function Dailies() {
               chapters.map((c) => (
                 <div key={c.id} className="chapter-row">
                   <button onClick={() => seek(c.t)}>{clock(c.t)}</button>
-                  <input
-                    value={c.name}
-                    onChange={(e) => store.set((s) => ({ chapters: s.chapters.map((x) => (x.id === c.id ? { ...x, name: e.target.value } : x)) }))}
-                  />
+                  <input value={c.name} onChange={(e) => store.set((s) => ({ chapters: s.chapters.map((x) => (x.id === c.id ? { ...x, name: e.target.value } : x)) }))} />
                 </div>
               ))
             ) : (
-              <p className="fine">Say “Mark it, live demo” while rolling to drop chapters.</p>
+              <p className="muted small">Say “mark it, live demo” while rolling to drop chapters.</p>
             )}
           </div>
           <div className="card">
@@ -198,7 +190,7 @@ export function Dailies() {
                     {clock(r.start)}–{clock(r.end)}
                   </button>
                   <Button kind="quiet" onClick={() => setEditing(r)}>
-                    Adjust box
+                    Adjust
                   </Button>
                   <Button kind="quiet" onClick={() => store.set((s) => ({ ranges: s.ranges.filter((x) => x.id !== r.id) }))}>
                     Remove
@@ -206,7 +198,7 @@ export function Dailies() {
                 </div>
               ))
             ) : (
-              <p className="fine">Flashed a key? Say “Redact that” right after.</p>
+              <p className="muted small">Flashed a key? Say “redact that” right after.</p>
             )}
           </div>
         </aside>
@@ -217,12 +209,12 @@ export function Dailies() {
         <div className="modal" onClick={() => setPlaying(null)}>
           <div className="modal-card" onClick={(e) => e.stopPropagation()}>
             <header>
-              <h3>Outtake · Take {playing.take}</h3>
+              <h2>Outtake · Take {playing.take}</h2>
               <Button kind="quiet" onClick={() => setPlaying(null)}>
                 Close
               </Button>
             </header>
-            {playing.url ? <video src={playing.url} controls autoPlay /> : <div className="splicing">Pulling it from the trash…</div>}
+            {playing.url ? <video src={playing.url} controls autoPlay /> : <div className="splicing">Pulling it from the trim bin…</div>}
           </div>
         </div>
       )}
@@ -243,11 +235,11 @@ function RedactEditor({ range, onClose }: { range: RangeInfo; onClose: () => voi
     <div className="modal" onClick={onClose}>
       <div className="modal-card" onClick={(e) => e.stopPropagation()}>
         <header>
-          <h3>Drag over what should be blurred</h3>
+          <h2>Drag over what should be blurred</h2>
         </header>
         <div
           ref={box}
-          className="me-canvas"
+          className="draw"
           style={{ aspectRatio: `${director.comp.W} / ${director.comp.H}` }}
           onPointerDown={(e) => {
             (e.target as HTMLElement).setPointerCapture(e.pointerId);
@@ -263,9 +255,9 @@ function RedactEditor({ range, onClose }: { range: RangeInfo; onClose: () => voi
           onPointerUp={() => setDrag(null)}
         >
           {snap && <img src={snap.url} alt="" draggable={false} />}
-          <div className="me-rect redact" style={{ left: `${rect.x * 100}%`, top: `${rect.y * 100}%`, width: `${rect.w * 100}%`, height: `${rect.h * 100}%` }} />
+          <div className="draw-rect redact" style={{ left: `${rect.x * 100}%`, top: `${rect.y * 100}%`, width: `${rect.w * 100}%`, height: `${rect.h * 100}%` }} />
         </div>
-        <div className="me-bar">
+        <div className="draw-bar">
           <Button kind="quiet" onClick={() => setRect({ x: 0, y: 0, w: 1, h: 1 })}>
             Whole frame
           </Button>

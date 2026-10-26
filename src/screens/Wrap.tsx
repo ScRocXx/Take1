@@ -14,8 +14,15 @@ export function Wrap() {
   const [master, setMaster] = useState<{ url: string; size: number } | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [reel, setReel] = useState<{ url: string | null; p: number } | null>(null);
-  const lines = useMemo(() => director.transcript(), [duration]);
+  const transcript = useStore((s) => s.transcript);
+  const lines = useMemo(() => transcript ?? [], [transcript]);
   const [title, setTitle] = useState(() => guessTitle(lines));
+  useEffect(() => {
+    director.transcribe();
+  }, []);
+  useEffect(() => {
+    if (lines.length && title === 'My Take1 demo') setTitle(guessTitle(lines));
+  }, [lines]);
 
   useEffect(() => {
     director
@@ -45,7 +52,7 @@ export function Wrap() {
     const deg = Math.round(progress * 360);
     return (
       <main className="wrap printing">
-        <div className="ring" style={{ background: `conic-gradient(var(--tally) ${deg}deg, var(--panel-2) ${deg}deg)` }}>
+        <div className="ring" style={{ background: `conic-gradient(var(--ink) ${deg}deg, var(--cream-2) ${deg}deg)` }}>
           <div className="ring-inner">
             <svg viewBox="0 0 100 100" className="reel spin" aria-hidden>
               <circle cx="50" cy="50" r="40" fill="none" stroke="currentColor" strokeWidth="3" />
@@ -75,12 +82,12 @@ export function Wrap() {
       </header>
 
       <section className="wrap-grid">
-        <article className="card out-card out-video">
+        <article className="card out-card out-video card-fathom">
           <video src={master.url} controls />
           <footer>
             <div>
               <h3>Final cut</h3>
-              <span className="fine">MP4 · {(master.size / 1e6).toFixed(1)} MB · speech levelled to ≈ −16 LUFS</span>
+              <span className="small">MP4 · {(master.size / 1e6).toFixed(1)} MB · speech levelled to ≈ −16 LUFS</span>
             </div>
             <Button kind="primary" icon={Icon.down} onClick={() => download(master.url, `${slug}.mp4`)}>
               Download
@@ -117,7 +124,7 @@ export function Wrap() {
 
         <article className="card out-card">
           <h3>Captions</h3>
-          <pre>{srt.split('\n').slice(0, 12).join('\n') || 'No narration transcribed.'}</pre>
+          <pre>{srt.split('\n').slice(0, 12).join('\n') || (lines.length ? '' : 'Transcribing…')}</pre>
           <footer>
             <Button kind="quiet" icon={Icon.down} onClick={() => downloadText(srt, `${slug}.srt`)} disabled={!srt}>
               .srt
@@ -127,7 +134,7 @@ export function Wrap() {
 
         <article className="card out-card out-reel">
           <h3>Blooper reel</h3>
-          <p className="fine">Every outtake, back to back, labelled by take. Your most honest content.</p>
+          <p className="muted small">Every outtake, back to back, labelled by take. Your most honest content.</p>
           {reel?.url ? (
             <>
               <video src={reel.url} controls />
