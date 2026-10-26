@@ -1,25 +1,32 @@
 {
   "name": "take1",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Take1 - a screen recorder you direct with your voice. Mess up out loud. Ship take one.",
   "type": "module",
+  "main": "electron/main.cjs",
   "scripts": {
-    "dev": "vite",
+    "dev": "vite --open",
     "build": "vite build",
     "preview": "vite preview",
+    "app": "vite build && electron .",
+    "app:dev": "concurrently -k -n web,app \"vite --port 5173 --strictPort\" \"wait-on tcp:5173 && cross-env TAKE1_DEV_URL=http://localhost:5173 electron .\"",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@huggingface/transformers": "^3.4.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
-    "@types/dom-webcodecs": "^0.1.11",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.3",
+    "concurrently": "^9.1.0",
+    "cross-env": "^7.0.3",
+    "electron": "^33.2.0",
     "typescript": "^5.6.3",
-    "vite": "^5.4.10"
+    "vite": "^5.4.10",
+    "wait-on": "^8.0.1"
   }
 }
