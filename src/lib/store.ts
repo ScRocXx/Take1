@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from 'react';
 
 export type Phase = 'idle' | 'rolling' | 'rewinding' | 'preroll' | 'hold' | 'wrapped';
-export type Screen = 'greenroom' | 'stage' | 'console' | 'dailies' | 'wrap';
+export type Screen = 'greenroom' | 'stage' | 'console' | 'dailies' | 'wrap' | 'library';
 export type Tone = 'rec' | 'cue' | 'hold' | 'redact' | 'ok' | 'muted';
 
 export interface Rect { x: number; y: number; w: number; h: number }
@@ -47,8 +47,15 @@ export interface Settings {
   pill: boolean;
 }
 
+/** Hold-to-talk combos. Fn isn't offered: on Windows laptops the Fn key never reaches the OS. */
+export const TALK_KEYS: { id: string; label: string; note: string }[] = [
+  { id: 'Ctrl+Shift', label: 'Ctrl + Shift', note: 'Default' },
+  { id: 'Ctrl+Win', label: 'Ctrl + Win', note: 'What Wispr Flow uses on Windows' },
+  { id: 'Alt+Shift', label: 'Alt + Shift', note: 'If you don’t switch keyboard languages with it' },
+  { id: 'RightCtrl', label: 'Right Ctrl', note: 'One key, rarely used by other apps' },
+];
+
 export const DEFAULT_SHORTCUTS: Record<string, string> = {
-  command: 'Ctrl+Alt+Space',
   record: 'Ctrl+Alt+R',
   cut: 'Ctrl+Alt+C',
   hold: 'Ctrl+Alt+H',
@@ -56,15 +63,33 @@ export const DEFAULT_SHORTCUTS: Record<string, string> = {
   pill: 'Ctrl+Alt+T',
 };
 
-export const TALK_KEYS = [
-  { id: 'Ctrl+Alt+Space', label: 'Ctrl + Alt + Space', note: 'Works anywhere, standard' },
-  { id: 'Alt+Space', label: 'Alt + Space', note: 'Fast, two-key hold' },
-  { id: 'Ctrl+Shift+Space', label: 'Ctrl + Shift + Space', note: 'Alternative chord' },
-  { id: 'RightAlt', label: 'Right Alt', note: 'Single key hold' },
-];
+export interface TakeMeta {
+  id: string;
+  title: string;
+  createdAt: number;
+  duration: number;
+  retakes: number;
+  held: number;
+  size: number;
+  hasCaptions: boolean;
+  captionsBurned: boolean;
+  thumbUrl: string | null;
+}
+
+export interface CaptionState {
+  status: 'idle' | 'downloading' | 'transcribing' | 'ready' | 'error';
+  progress: number;
+  detail: string | null;
+}
 
 export interface AppState {
   screen: Screen;
+  sessionId: string;
+  title: string;
+  library: TakeMeta[];
+  captions: CaptionState;
+  keysDown: { ctrl: boolean; shift: boolean; alt: boolean; meta: boolean };
+  helpOpen: boolean;
   phase: Phase;
   scene: number;
   take: number;
@@ -103,13 +128,20 @@ export interface AppState {
   tried: Record<string, boolean>;
   transcript: { start: number; end: number; text: string }[] | null;
   transcribing: boolean;
-  talkKey: string;
   shortcuts: Record<string, string>;
+  talkKey: string;
+  talkHook: boolean;
   settings: Settings;
 }
 
 const initial: AppState = {
   screen: 'greenroom',
+  sessionId: '',
+  title: '',
+  library: [],
+  captions: { status: 'idle', progress: 0, detail: null },
+  keysDown: { ctrl: false, shift: false, alt: false, meta: false },
+  helpOpen: false,
   phase: 'idle',
   scene: 1,
   take: 1,
@@ -148,8 +180,9 @@ const initial: AppState = {
   tried: {},
   transcript: null,
   transcribing: false,
-  talkKey: 'Ctrl+Alt+Space',
   shortcuts: { ...DEFAULT_SHORTCUTS },
+  talkKey: 'Ctrl+Shift',
+  talkHook: true,
   settings: { sounds: true, prerollAudio: true, replaySeconds: 5, countdown: 3, pill: true },
 };
 

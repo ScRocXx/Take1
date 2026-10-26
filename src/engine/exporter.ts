@@ -119,6 +119,7 @@ export interface RenderOptions {
   height: number;
   clips: Clip[];
   redactions?: { start: number; end: number; rect: Rect }[]; // seconds on the output timeline
+  captions?: { start: number; end: number; text: string }[]; // burned in, seconds on the output timeline
   onProgress?: (p: number) => void;
 }
 
@@ -162,6 +163,8 @@ export async function renderClips(o: RenderOptions) {
         ctx.restore();
       }
       if (clip.label && ts - clip.from < 1_200_000) drawBadge(ctx, clip.label, o.height);
+      const cap = o.captions?.find((c) => outSec >= c.start && outSec < c.end);
+      if (cap) drawCaption(ctx, cap.text, o.width, o.height);
       f.close();
       let outTs = Math.round(offset + ts - clip.from);
       if (outTs <= lastOut) outTs = lastOut + 1;
@@ -179,6 +182,42 @@ export async function renderClips(o: RenderOptions) {
   await tape.flush();
   tape.close();
   return { chunks: tape.chunks, codec: tape.codec, description: tape.decoderConfig?.description, duration: offset };
+}
+
+/** Broadcast-style caption: up to two lines, centred near the bottom, on a soft dark plate. */
+export function drawCaption(ctx: CanvasRenderingContext2D, text: string, W: number, H: number) {
+  const size = Math.round(H / 21);
+  ctx.save();
+  ctx.font = `600 ${size}px Figtree, "Segoe UI", system-ui, sans-serif`;
+  const maxW = W * 0.78;
+  const words = text.split(/\s+/);
+  const lines: string[] = [];
+  let line = '';
+  for (const w of words) {
+    const t = line ? line + ' ' + w : w;
+    if (ctx.measureText(t).width > maxW && line) {
+      lines.push(line);
+      line = w;
+    } else line = t;
+  }
+  if (line) lines.push(line);
+  const shown = lines.slice(-2);
+  const lh = size * 1.3;
+  const padX = size * 0.6;
+  const padY = size * 0.35;
+  const boxW = Math.min(maxW, Math.max(...shown.map((l) => ctx.measureText(l).width))) + padX * 2;
+  const boxH = lh * shown.length + padY * 2;
+  const x = (W - boxW) / 2;
+  const y = H - boxH - H * 0.07;
+  ctx.fillStyle = 'rgba(17,17,17,0.78)';
+  ctx.beginPath();
+  ctx.roundRect(x, y, boxW, boxH, size * 0.4);
+  ctx.fill();
+  ctx.fillStyle = '#ffffeb';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  shown.forEach((l, i) => ctx.fillText(l, W / 2, y + padY + lh * (i + 0.5)));
+  ctx.restore();
 }
 
 function drawBadge(ctx: CanvasRenderingContext2D, label: string, H: number) {
