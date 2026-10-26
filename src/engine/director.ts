@@ -1,24 +1,29 @@
-import { store, pushTicker, toast, uid, type Rect, type StageMark, type RangeInfo, type Tone } from '../lib/store';
+import { store, pushLog, toast, uid, DEFAULT_SHORTCUTS, type Rect, type StageMark, type RangeInfo, type Tone } from '../lib/store';
+import { native } from '../lib/native';
 import { AudioEngine, PcmTape, SAMPLE_RATE } from './audio';
 import { Compositor, signature, matchScore } from './compositor';
 import { VideoTape, type Chunk } from './videoTape';
 import { Snapshots, type Snap } from './snapshots';
+import { Replay } from './replay';
 import { createTicker } from './ticker';
 import { buildMp4, encodeAudio, processAudio, renderClips, type Clip } from './exporter';
-import { Recognizer, type SpeechEvent } from '../voice/recognizer';
-import { parse, type Command } from '../voice/grammar';
+import { interpret, INTENT_LABEL, type Command } from '../voice/intent';
+import { stt, to16k } from '../voice/stt';
+import { listenOnce, webSpeechAvailable } from '../voice/recognizer';
 import { sounds, bindSounds, setSoundsEnabled } from '../ui/sounds';
 
 /**
- * The Director turns voice into tape edits.
+ * The Director turns intents (voice, hotkeys, buttons) into tape edits.
  *
  * Two clocks:
  *  - AudioContext time ("ctx"): when things physically happened.
  *  - Tape time: where they land in the final video. It only advances while Rolling
- *    (and at 1/8 speed during Hold), and jumps backwards on a Cut.
+ *    (1/8 speed during Hold) and jumps back on a Cut.
+ * A "stretch" maps one run of ctx time onto tape time; audio blocks are placed on
+ * the tape through the stretch that was live when they were captured.
  *
- * A "stretch" maps one run of ctx time onto tape time. Audio blocks and recognized
- * words are placed on the tape through the stretch that was live when they happened.
+ * Nothing listens for commands until you ask it to: a hotkey or a click opens a
+ * short command session, which ends on its own after you stop speaking.
  */
 
 interface Stretch {
@@ -27,16 +32,6 @@ interface Stretch {
   tapeStart: number;
   rate: number;
   dead?: boolean;
-}
-
-export interface Utt {
-  key: string;
-  text: string;
-  firstHeard: number;
-  onset: number | null; // tape seconds
-  end: number | null;
-  command: boolean;
-  final: boolean;
 }
 
 interface Outtake {
@@ -48,7 +43,6 @@ interface Outtake {
   chunks: Chunk[];
   audio: Float32Array;
   snaps: Snap[];
-  utts: Utt[];
   saved: {
     ranges: RangeInfo[];
     chapters: ReturnType<typeof store.get>['chapters'];
@@ -58,22 +52,17 @@ interface Outtake {
   };
 }
 
+interface Session {
+  startCtx: number;
+  startTape: number | null;
+  buf: Float32Array[];
+  speech: boolean;
+  lastLoud: number;
+  web?: { stop: () => void };
+}
+
 const FPS = 30;
 const FD = 1 / FPS;
-
-const LABEL: Record<Command['type'], (c: any) => [string, Tone]> = {
-  action: () => ['ACTION', 'tally'],
-  cut: () => ['CUT', 'cue'],
-  cutBack: (c) => [`CUT BACK ${c.seconds}s`, 'cue'],
-  scratch: () => ['SCRATCH THAT', 'muted'],
-  hold: () => ['HOLD', 'hold'],
-  zoom: (c) => [`ZOOM · ${c.mark.name.toUpperCase()}`, 'ok'],
-  wide: () => ['WIDE', 'ok'],
-  redact: () => ['REDACT', 'redact'],
-  chapter: (c) => [`MARK · ${c.name || 'CHAPTER'}`, 'ok'],
-  camera: (c) => [`CAMERA ${c.on ? 'ON' : 'OFF'}`, 'muted'],
-  wrap: () => ['THAT’S A WRAP', 'tally'],
-};
 
 export class Director {
   audio: AudioEngine | null = null;
@@ -81,12 +70,12 @@ export class Director {
   video = new VideoTape(FPS, 5_000_000);
   pcm = new PcmTape(SAMPLE_RATE);
   snaps = new Snapshots();
-  rec: Recognizer | null = null;
   screenStream: MediaStream | null = null;
   cameraStream: MediaStream | null = null;
-  hudWindow: Window | null = null;
-  hudRoot: HTMLElement | null = null;
+  pillWin: Window | null = null;
+  pillRoot: HTMLElement | null = null;
   onName: ((name: string) => void) | null = null;
+  replay: Replay | null = null;
 
   private ticker: { stop: () => void } | null = null;
   private tapeBase = 0;
@@ -95,24 +84,31 @@ export class Director {
   private stretches: Stretch[] = [];
   private lastFrameTs = -1;
   private forceKey = false;
+  private frozen = false;
   private lastSnapT = -1e9;
   private lastPunch = 0;
   private punchAt: number | null = null;
+  private prerollTotal = 0;
   private holdStart: { tape: number; ctx: number } | null = null;
   private timers: { at: number; fn: () => void; tag: string }[] = [];
   private matchSig: Float32Array | null = null;
   private tickN = 0;
-  private kb = 0;
+  private actionN = 0;
+  private session: Session | null = null;
 
-  utts: Utt[] = [];
-  private live = new Map<string, Utt>();
-  private consumed = new Set<string>();
   scrubs: { start: number; end: number }[] = [];
   outtakes: Outtake[] = [];
   private cutStack: Outtake[] = [];
   private undo: { label: string; fn: () => void }[] = [];
   private viewHistory: { t: number; view: Rect }[] = [];
   private previewCache: string | null = null;
+
+  constructor() {
+    if (native) {
+      native.onHotkey((name) => this.hotkey(name));
+      native.getShortcuts().then((s) => s && store.set({ shortcuts: { ...DEFAULT_SHORTCUTS, ...s } }));
+    }
+  }
 
   // ───────────────────────── setup ─────────────────────────
 
@@ -129,38 +125,33 @@ export class Director {
     return this.audio?.ctx.currentTime ?? performance.now() / 1000;
   }
 
-  async micOn() {
+  private get thr() {
+    return this.audio?.speechThreshold ?? 0.01;
+  }
+
+  async micOn(deviceId?: string) {
     const a = this.ensureAudio();
     try {
-      await a.start();
-      store.set({ micOn: true });
+      await a.start(deviceId);
+      store.set({ micOn: true, micDevice: a.deviceId, micDevices: await AudioEngine.inputs() });
     } catch (e) {
-      toast('Microphone blocked. Allow it in the address bar and try again.', 'tally');
+      toast('Microphone blocked. Allow it and try again.', 'rec');
       throw e;
     }
     this.startTicker();
-    this.listen();
-  }
-
-  listen() {
-    if (!Recognizer.supported) {
-      store.set({ listening: 'unsupported' });
-      return;
-    }
-    if (this.rec) return this.rec.start();
-    this.rec = new Recognizer(
-      () => this.ctxTime,
-      (e) => this.onSpeech(e),
-      (s, d) => store.set({ listening: s, listenError: d ?? null }),
-    );
-    this.rec.start();
+    stt.warm();
   }
 
   private startTicker() {
     if (!this.ticker) this.ticker = createTicker(FPS, () => this.tick());
   }
 
+  /** Browser: the native picker. Desktop: our own picker (Stage shows it). */
   async shareScreen() {
+    if (native) {
+      store.set({ pickingSource: true });
+      return;
+    }
     const stream = await navigator.mediaDevices.getDisplayMedia({
       video: { displaySurface: 'window', frameRate: { ideal: 30 }, width: { ideal: 1920 }, height: { ideal: 1080 } },
       audio: false,
@@ -171,7 +162,14 @@ export class Director {
     await this.attachScreen(stream);
   }
 
-  async attachScreen(stream: MediaStream) {
+  async useSource(id: string, name: string) {
+    store.set({ pickingSource: false });
+    await native!.chooseSource(id);
+    const stream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: { ideal: 30 } }, audio: false } as any);
+    await this.attachScreen(stream, id.startsWith('screen:') ? 'monitor' : 'window', name);
+  }
+
+  async attachScreen(stream: MediaStream, surface?: string, name?: string) {
     this.screenStream?.getTracks().forEach((t) => t.stop());
     this.comp.detach('screen');
     this.screenStream = stream;
@@ -181,10 +179,10 @@ export class Director {
     this.comp.attach(track, 'screen');
     await this.video.configure(this.comp.W, this.comp.H);
     this.startTicker();
-    store.set({ hasScreen: true, surface: s.displaySurface ?? null });
+    store.set({ hasScreen: true, surface: surface ?? s.displaySurface ?? null, sourceName: name ?? track.label ?? null });
     track.addEventListener('ended', () => {
       store.set({ hasScreen: false });
-      if (['rolling', 'hold'].includes(store.get().phase)) toast('Window sharing stopped. Say “That’s a wrap” or share again.', 'tally');
+      if (['rolling', 'hold'].includes(store.get().phase)) toast('Window sharing stopped. Wrap, or share again.', 'rec');
     });
   }
 
@@ -202,13 +200,23 @@ export class Director {
       store.set({ hasCamera: true, cameraOn: true });
       this.comp.cameraOn = true;
     } catch {
-      toast('Camera blocked or not found.', 'tally');
+      toast('Camera blocked or not found.', 'rec');
     }
   }
 
   setSettings(p: Partial<ReturnType<typeof store.get>['settings']>) {
     store.set((s) => ({ settings: { ...s.settings, ...p } }));
     if (p.sounds !== undefined) setSoundsEnabled(p.sounds);
+  }
+
+  async setShortcut(name: string, accel: string) {
+    const next = { ...store.get().shortcuts, [name]: accel };
+    store.set({ shortcuts: next });
+    if (native) {
+      const ok = await native.setShortcuts(next);
+      const bad = Object.entries(ok).filter(([, v]) => !v).map(([k]) => k);
+      if (bad.length) toast(`Couldn’t register ${bad.join(', ')}: another app may own that shortcut.`, 'rec');
+    }
   }
 
   // ───────────────────────── marks ─────────────────────────
@@ -230,7 +238,7 @@ export class Director {
     this.comp.setView(v);
     this.viewHistory.push({ t: this.tapeNow(), view: v });
     store.set({ activeMark: mark?.id ?? null });
-    if (record)
+    if (record) {
       this.undo.push({
         label: 'zoom',
         fn: () => {
@@ -239,73 +247,75 @@ export class Director {
           store.set({ activeMark: prevActive });
         },
       });
+      this.act(mark ? 'zoom' : 'wide', mark ? `Zoom · ${mark.name}` : 'Wide', 'ok');
+    }
   }
 
-  // ───────────────────────── HUD ─────────────────────────
+  // ───────────────────────── pill surface ─────────────────────────
 
-  async openHud() {
-    const dpip = (window as any).documentPictureInPicture;
-    if (!dpip) {
-      toast('Floating console needs Chrome or Edge 116+. This tab works as the console.', 'muted');
-      return false;
+  /**
+   * Desktop: a transparent, always-on-top window the shell excludes from screen
+   * capture. Browser: a Document Picture-in-Picture window (needs a click).
+   */
+  async openPill() {
+    if (this.pillWin && !this.pillWin.closed) return true;
+    let w: Window | null = null;
+    if (native) w = window.open('about:blank', 'take1-pill');
+    else {
+      const dpip = (window as any).documentPictureInPicture;
+      if (!dpip) {
+        toast('The floating pill needs Chrome or Edge 116+. Use the desktop app for a system-wide pill.', 'muted');
+        return false;
+      }
+      w = await dpip.requestWindow({ width: 460, height: 320 });
     }
-    if (this.hudWindow) return true;
-    const w: Window = await dpip.requestWindow({ width: 360, height: 210 });
+    if (!w) return false;
     [...document.styleSheets].forEach((ss) => {
       try {
         const css = [...ss.cssRules].map((r) => r.cssText).join('\n');
-        const st = w.document.createElement('style');
+        const st = w!.document.createElement('style');
         st.textContent = css;
-        w.document.head.appendChild(st);
+        w!.document.head.appendChild(st);
       } catch {
         if (ss.href) {
-          const l = w.document.createElement('link');
+          const l = w!.document.createElement('link');
           l.rel = 'stylesheet';
           l.href = ss.href;
-          w.document.head.appendChild(l);
+          w!.document.head.appendChild(l);
         }
       }
     });
     w.document.title = 'Take1';
-    w.document.body.className = 'hud-body';
+    w.document.documentElement.className = native ? 'pill-native' : 'pill-pip';
+    w.document.body.className = 'pill-body';
     const root = w.document.createElement('div');
-    root.id = 'hud-root';
+    root.id = 'pill-root';
     w.document.body.appendChild(root);
-    this.hudWindow = w;
-    this.hudRoot = root;
-    w.addEventListener('pagehide', () => {
-      this.hudWindow = null;
-      this.hudRoot = null;
-      store.set({ hudOpen: false });
-    });
-    store.set({ hudOpen: true });
+    w.addEventListener('keydown', (e) => keyHandler(e));
+    this.pillWin = w;
+    this.pillRoot = root;
+    store.set({ pillOpen: true });
     return true;
   }
 
-  closeHud() {
-    this.hudWindow?.close();
-    this.hudWindow = null;
-    this.hudRoot = null;
-    store.set({ hudOpen: false });
+  closePill() {
+    this.pillWin?.close();
+    this.pillWin = null;
+    this.pillRoot = null;
+    store.set({ pillOpen: false });
+  }
+
+  togglePill() {
+    if (store.get().pillOpen) this.closePill();
+    else this.openPill();
   }
 
   // ───────────────────────── clocks ─────────────────────────
 
   tapeNow() {
     const ph = store.get().phase;
-    if (ph === 'rolling' || ph === 'hold') return this.tapeBase + Math.max(0, this.ctxTime - this.resumeCtx) * this.rate;
+    if (!this.frozen && (ph === 'rolling' || ph === 'hold')) return this.tapeBase + Math.max(0, this.ctxTime - this.resumeCtx) * this.rate;
     return this.tapeBase;
-  }
-
-  private ctxToTape(c: number): number | null {
-    for (let i = this.stretches.length - 1; i >= 0; i--) {
-      const s = this.stretches[i];
-      if (s.dead) continue;
-      if (c >= s.ctxStart && (s.ctxEnd === null || c <= s.ctxEnd)) return s.tapeStart + (c - s.ctxStart) * s.rate;
-      // speech that began just before a punch-in belongs to the new take
-      if (c < s.ctxStart && s.ctxStart - c < 0.8 && (i === 0 || (this.stretches[i - 1].ctxEnd ?? 0) <= c)) return s.tapeStart;
-    }
-    return null;
   }
 
   private closeStretch(kill: boolean) {
@@ -315,10 +325,10 @@ export class Director {
     if (kill) s.dead = true;
   }
 
-  private openStretch(rate: number) {
-    this.resumeCtx = this.ctxTime;
+  private openStretch(rate: number, at = this.ctxTime) {
+    this.resumeCtx = at;
     this.rate = rate;
-    this.stretches.push({ ctxStart: this.resumeCtx, ctxEnd: null, tapeStart: this.tapeBase, rate });
+    this.stretches.push({ ctxStart: at, ctxEnd: null, tapeStart: this.tapeBase, rate });
   }
 
   private after(ms: number, fn: () => void, tag = 'sys') {
@@ -329,9 +339,25 @@ export class Director {
     this.timers = this.timers.filter((t) => t.tag !== tag);
   }
 
+  private act(kind: string, label: string, tone: Tone, detail?: string) {
+    store.set({ lastAction: { kind, label, id: ++this.actionN } });
+    pushLog({ kind, label, tone, detail, at: this.tapeNow() });
+  }
+
   // ───────────────────────── capture loop ─────────────────────────
 
   private onAudio(s: Float32Array, t: number) {
+    const ses = this.session;
+    if (ses && !ses.web) {
+      ses.buf.push(s.slice());
+      let e = 0;
+      for (let i = 0; i < s.length; i++) e += s[i] * s[i];
+      if (Math.sqrt(e / s.length) > this.thr * 1.15) {
+        ses.speech = true;
+        ses.lastLoud = t + s.length / this.pcm.sr;
+      }
+    }
+    if (store.get().micMuted) return;
     const sr = this.pcm.sr;
     const dur = s.length / sr;
     for (let i = this.stretches.length - 1; i >= 0 && i >= this.stretches.length - 3; i--) {
@@ -356,10 +382,16 @@ export class Director {
       }
     }
     this.tickN++;
-    if (this.audio && this.tickN % 3 === 0) {
+    if (this.audio && this.tickN % 2 === 0) {
       const lv = Math.min(1, this.audio.level * 6);
       if (Math.abs(lv - store.get().micLevel) > 0.01) store.set({ micLevel: lv });
     }
+    if (this.tickN % 30 === 0 && this.pillWin?.closed) {
+      this.pillWin = null;
+      this.pillRoot = null;
+      store.set({ pillOpen: false });
+    }
+    this.sessionTick();
     this.comp.draw(now);
     const ph = store.get().phase;
     if (ph === 'rolling' || ph === 'hold') this.captureFrame();
@@ -367,7 +399,7 @@ export class Director {
   }
 
   private captureFrame() {
-    if (!this.comp.hasScreen || this.video.busy) return;
+    if (this.frozen || !this.comp.hasScreen || this.video.busy) return;
     const t = this.tapeNow();
     if (this.lastFrameTs >= 0 && t - this.lastFrameTs < FD * 0.95) return;
     let ts = Math.round(t * 1e6);
@@ -384,106 +416,177 @@ export class Director {
   }
 
   private prerollTick() {
-    if (this.punchAt !== null) {
-      const rem = this.punchAt - this.ctxTime;
-      const n = Math.max(1, Math.ceil(rem));
-      if (store.get().countdown !== n) {
-        store.set({ countdown: n });
-        sounds.tick();
-      }
-      if (rem <= 0) return this.punchIn(this.punchAt);
+    if (this.punchAt === null) return;
+    const rem = this.punchAt - this.ctxTime;
+    const cd = store.get().settings.countdown;
+    const n = rem <= cd ? Math.max(1, Math.ceil(rem)) : null;
+    if (store.get().countdown !== n) {
+      store.set({ countdown: n });
+      if (n !== null) sounds.tick();
     }
-    if (this.matchSig && this.tickN % 5 === 0) {
-      const score = matchScore(this.matchSig, signature(this.comp.canvas));
-      store.set({ matchScore: score });
+    if (rem <= 0) return this.punchIn(this.punchAt);
+    if (this.tickN % 5 === 0) {
+      if (!this.matchSig && this.replay?.last) this.matchSig = signature(this.replay.last);
+      if (this.matchSig) store.set({ matchScore: matchScore(this.matchSig, signature(this.comp.canvas)) });
     }
   }
 
-  // ───────────────────────── speech ─────────────────────────
-
-  /** Simulate a spoken phrase (keyboard fallback and tests). */
-  say(text: string) {
-    const key = `kb:${++this.kb}`;
-    const firstHeard = this.ctxTime - 0.3;
-    this.onSpeech({ type: 'final', key, text, firstHeard });
+  /** The replay frame that should be on screen right now, plus progress (0..1). */
+  replayNow(): { frame: ImageBitmap | null; progress: number; remaining: number } | null {
+    if (store.get().phase !== 'preroll' || this.punchAt === null) return null;
+    const rem = Math.max(0, this.punchAt - this.ctxTime);
+    const progress = this.prerollTotal ? 1 - rem / this.prerollTotal : 1;
+    const T = this.tapeBase;
+    const frame = this.replay ? this.replay.frameAt(T - Math.min(rem, T - this.replay.from)) : null;
+    return { frame, progress, remaining: rem };
   }
 
-  private onSpeech(e: SpeechEvent) {
+  // ───────────────────────── command sessions ─────────────────────────
+
+  hotkey(name: string) {
+    switch (name) {
+      case 'command':
+        return this.toggleCommand();
+      case 'record':
+        return this.record();
+      case 'cut':
+        return this.run({ type: 'cut' });
+      case 'hold':
+        return this.holdToggle();
+      case 'mic':
+        return this.toggleMic();
+      case 'pill':
+        return this.togglePill();
+      case 'cancel':
+        return this.cancelCommand();
+    }
+  }
+
+  async toggleCommand() {
+    if (this.session) {
+      // second press ends listening early (if there was speech) or cancels
+      if (this.session.speech && !this.session.web) return this.finishFromAudio();
+      return this.cancelCommand();
+    }
+    return this.startCommand();
+  }
+
+  async startCommand() {
     const st = store.get();
-    let u = this.live.get(e.key);
-    if (!u) {
-      const onTape = st.phase === 'rolling' || st.phase === 'hold';
-      const onsetCtx = this.audio && !e.key.startsWith('kb:') ? this.audio.findOnset(e.firstHeard - 0.25) : e.firstHeard;
-      u = { key: e.key, text: e.text, firstHeard: e.firstHeard, onset: onTape ? this.ctxToTape(onsetCtx) : null, end: null, command: false, final: false };
-      this.live.set(e.key, u);
-      if (this.live.size > 300) this.live.delete(this.live.keys().next().value!);
-      if (u.onset !== null) this.utts.push(u);
-    }
-    u.text = e.text;
-    if (this.consumed.has(e.key)) {
-      if (e.type === 'final') store.set({ interim: '' });
-      return;
-    }
-    const cmd = parse(e.text, st.marks, st.settings.strict);
-    if (e.type === 'interim') {
-      store.set({ interim: e.text });
-      // fast path: an exact command that stays unchanged for 350 ms fires before the final result
-      this.timers = this.timers.filter((x) => x.tag !== `cmd:${e.key}`);
-      if (cmd && !(cmd.type === 'cut' && cmd.trailing)) {
-        const snapshot = e.text;
-        const uu = u;
-        this.after(350, () => {
-          if (!this.consumed.has(uu.key) && uu.text === snapshot) this.fire(cmd, uu);
-        }, `cmd:${e.key}`);
+    if (st.listen.state === 'thinking') return;
+    if (!st.micOn) {
+      try {
+        await this.micOn();
+      } catch {
+        return;
       }
+    }
+    const useWeb = !stt.ready.command && webSpeechAvailable();
+    if (!stt.ready.command && !useWeb) {
+      const e = store.get().engine;
+      toast(
+        e.status === 'loading' ? `Voice engine still loading (${Math.round(e.progress * 100)}%). Buttons and hotkeys work now.` : 'Voice engine unavailable. Buttons and hotkeys still work.',
+        'muted',
+      );
       return;
     }
-    u.final = true;
-    if (u.onset !== null) u.end = this.ctxToTape(this.ctxTime - 0.25) ?? this.tapeNow();
-    this.clearTimers(`cmd:${e.key}`);
-    store.set({ interim: '' });
-    if (cmd) this.fire(cmd, u);
-    else this.onPlain(u);
+    const live = st.phase === 'rolling' || st.phase === 'hold';
+    const ses: Session = { startCtx: this.ctxTime, startTape: live ? this.tapeNow() : null, buf: [], speech: false, lastLoud: this.ctxTime };
+    this.session = ses;
+    native?.listening(true);
+    store.set((s) => ({ listen: { state: 'listening', heard: '', intent: null, alternatives: [], id: s.listen.id + 1 } }));
+    sounds.ping();
+    if (useWeb) {
+      const h = listenOnce(6000);
+      ses.web = h;
+      h.promise.then((text) => {
+        if (this.session !== ses) return;
+        this.session = null;
+        native?.listening(false);
+        if (!text.trim()) return this.unsure('', ['cut', 'wrap', 'hold']);
+        this.finishCommand(text, ses);
+      });
+    }
   }
 
-  private onPlain(u: Utt) {
+  cancelCommand(msg?: string) {
+    if (!this.session) return;
+    this.session.web?.stop();
+    this.session = null;
+    native?.listening(false);
+    store.set((s) => ({ listen: { ...s.listen, state: 'off' } }));
+    if (msg) toast(msg, 'muted');
+  }
+
+  private sessionTick() {
+    const s = this.session;
+    if (!s || s.web) return;
+    const now = this.ctxTime;
+    if (s.speech && now - s.lastLoud > 0.65) this.finishFromAudio();
+    else if (!s.speech && now - s.startCtx > 4.5) this.cancelCommand('Didn’t hear a command.');
+    else if (now - s.startCtx > 8) this.finishFromAudio();
+  }
+
+  private async finishFromAudio() {
+    const s = this.session;
+    if (!s) return;
+    this.session = null;
+    native?.listening(false);
+    store.set((x) => ({ listen: { ...x.listen, state: 'thinking' } }));
+    const total = s.buf.reduce((a, b) => a + b.length, 0);
+    const pcm = new Float32Array(total);
+    let p = 0;
+    for (const b of s.buf) {
+      pcm.set(b, p);
+      p += b.length;
+    }
+    let text = '';
+    try {
+      text = await stt.command(to16k(pcm, this.pcm.sr));
+    } catch {
+      return this.unsure('', ['cut', 'wrap', 'hold']);
+    }
+    this.finishCommand(text, s);
+  }
+
+  private unsure(heard: string, alternatives: string[]) {
+    store.set((x) => ({ listen: { ...x.listen, state: 'unsure', heard, alternatives } }));
+    const id = store.get().listen.id;
+    this.after(4000, () => store.get().listen.id === id && store.set((x) => ({ listen: { ...x.listen, state: 'off' } })), 'listen');
+  }
+
+  private async finishCommand(raw: string, s: Session) {
+    const text = raw.replace(/\[[^\]]*\]|\([^)]*\)/g, '').trim(); // whisper noise tags
     const st = store.get();
-    if (st.namingMark && this.onName) {
-      this.onName(u.text.replace(/[.!?]+$/, ''));
-      return;
-    }
-    pushTicker({ kind: 'speech', text: u.text });
-  }
-
-  private scrub(u: Utt) {
+    const emb = await stt.intentScores(text);
+    const r = interpret(text, st.marks, emb);
+    // the spoken command never reaches the final audio
     const ph = store.get().phase;
-    if ((ph === 'rolling' || ph === 'hold') && u.onset !== null) {
-      this.scrubs.push({ start: Math.max(0, u.onset - 0.08), end: this.tapeNow() + 0.15 });
-    }
+    if (s.startTape !== null && (ph === 'rolling' || ph === 'hold')) this.scrubs.push({ start: Math.max(0, s.startTape - 0.05), end: this.tapeNow() + 0.1 });
+    if (!r.command) return this.unsure(text, r.alternatives);
+    store.set((x) => ({ listen: { ...x.listen, state: 'done', heard: text, intent: r.intent } }));
+    const id = store.get().listen.id;
+    this.after(1500, () => store.get().listen.id === id && store.set((x) => ({ listen: { ...x.listen, state: 'off' } })), 'listen');
+    this.run(r.command, { startTape: s.startTape });
   }
 
-  private fire(cmd: Command, u: Utt) {
-    this.consumed.add(u.key);
-    u.command = !(cmd.type === 'cut' && cmd.trailing);
+  /** Act as if a command session just heard `text` (tests, demos). */
+  async simulate(text: string, secondsAgo = 1) {
+    const live = ['rolling', 'hold'].includes(store.get().phase);
+    const s: Session = { startCtx: this.ctxTime - secondsAgo, startTape: live ? Math.max(0, this.tapeNow() - secondsAgo) : null, buf: [], speech: true, lastLoud: this.ctxTime };
+    store.set((x) => ({ listen: { ...x.listen, id: x.listen.id + 1 } }));
+    await this.finishCommand(text, s);
+  }
+
+  // ───────────────────────── intents ─────────────────────────
+
+  /** One entry point for voice, buttons and hotkeys. */
+  run(cmd: Command, o: { startTape?: number | null } = {}) {
     const st = store.get();
-    const [label, tone] = LABEL[cmd.type](cmd);
-    pushTicker({ kind: 'command', text: label, tone });
-    store.set({ lastCommand: cmd.type });
-
-    if (st.rehearsing) {
-      store.set((s) => ({ rehearsal: { ...s.rehearsal, [cmd.type]: true } }));
-      if (cmd.type === 'cut' || cmd.type === 'cutBack') sounds.rewind(0.7);
-      else sounds.blip();
-      if (cmd.type === 'zoom') this.zoomTo(cmd.mark, false);
-      if (cmd.type === 'wide') this.zoomTo(null, false);
-      return;
-    }
-
+    if (st.trying) return this.tryOut(cmd);
     const ph = st.phase;
     const live = ph === 'rolling' || ph === 'hold';
-    const rewinding = ph === 'preroll' || ph === 'rewinding';
-    if (!['cut', 'cutBack', 'wrap'].includes(cmd.type)) sounds.blip();
-
+    const rew = ph === 'preroll' || ph === 'rewinding';
     switch (cmd.type) {
       case 'action':
         if (ph === 'idle') this.roll();
@@ -491,58 +594,79 @@ export class Director {
         else if (ph === 'preroll') this.punchIn(this.ctxTime);
         break;
       case 'cut':
-        if (live) this.cut({ utt: u, trailing: cmd.trailing });
-        else if (rewinding) this.cutFurther();
+        if (live) this.cut({ before: o.startTape ?? undefined });
+        else if (rew) this.cutFurther();
+        else toast('Nothing to cut yet. Start rolling first.', 'muted');
         break;
       case 'cutBack':
         if (live) this.cut({ seconds: cmd.seconds });
-        else if (rewinding) this.cutFurther(cmd.seconds);
+        else if (rew) this.cutFurther(cmd.seconds);
         break;
       case 'scratch':
-        if (rewinding) this.abortCut();
+        if (rew) this.abortCut();
         else this.undoLast();
         break;
       case 'hold':
-        if (ph === 'rolling') {
-          this.scrub(u);
-          this.hold();
-        }
+        if (ph === 'rolling') this.hold(o.startTape ?? null);
+        else if (ph === 'hold') this.endHold(true);
         break;
       case 'zoom':
-        this.scrub(u);
         this.zoomTo(cmd.mark);
         break;
       case 'wide':
-        this.scrub(u);
         this.zoomTo(null);
         break;
       case 'redact':
-        if (live) {
-          this.scrub(u);
-          this.addRedact();
-        }
+        if (live) this.addRedact();
         break;
       case 'chapter':
-        if (live) {
-          this.scrub(u);
-          this.addChapter(cmd.name, u.onset ?? this.tapeNow());
-        }
+        if (live) this.addChapter(cmd.name, o.startTape ?? this.tapeNow());
         break;
       case 'camera':
-        this.scrub(u);
         this.setCamera(cmd.on);
         break;
+      case 'mic':
+        this.setMicMuted(!cmd.on);
+        break;
       case 'wrap':
-        if (ph !== 'idle' && ph !== 'wrapped') this.wrap(u);
+        if (live || rew) this.wrap(o.startTape ?? null);
         break;
     }
+  }
+
+  private tryOut(cmd: Command) {
+    store.set((s) => ({ tried: { ...s.tried, [cmd.type]: true } }));
+    const label = cmd.type === 'zoom' ? `Zoom · ${cmd.mark.name}` : cmd.type === 'cutBack' ? `Back ${cmd.seconds} s` : INTENT_LABEL[cmd.type];
+    this.act(cmd.type, label, 'ok');
+    if (cmd.type === 'cut' || cmd.type === 'cutBack') sounds.rewind(0.7);
+  }
+
+  /** The manual switch: start rolling, or stop and wrap. */
+  record() {
+    const ph = store.get().phase;
+    if (ph === 'idle') this.run({ type: 'action' });
+    else if (ph !== 'wrapped') this.run({ type: 'wrap' });
+  }
+
+  holdToggle() {
+    const ph = store.get().phase;
+    if (ph === 'hold' || ph === 'rolling') this.run({ type: ph === 'hold' ? 'action' : 'hold' });
+  }
+
+  toggleMic() {
+    this.setMicMuted(!store.get().micMuted);
+  }
+
+  setMicMuted(m: boolean) {
+    store.set({ micMuted: m });
+    this.act('mic', m ? 'Mic muted' : 'Mic live', m ? 'rec' : 'ok');
   }
 
   // ───────────────────────── tape operations ─────────────────────────
 
   roll() {
     if (!this.comp.hasScreen) {
-      toast('Share a window first.', 'tally');
+      toast('Share a window first.', 'rec');
       return;
     }
     if (!this.audio) return;
@@ -550,38 +674,60 @@ export class Director {
     this.lastFrameTs = -1;
     store.set({ take: 1 });
     this.punchIn(this.ctxTime);
+    this.act('action', 'Action', 'rec');
   }
 
   private punchIn(atCtx: number) {
     this.punchAt = null;
     this.clearTimers('sys');
-    this.resumeCtx = atCtx;
-    this.rate = 1;
-    this.stretches.push({ ctxStart: atCtx, ctxEnd: null, tapeStart: this.tapeBase, rate: 1 });
+    this.openStretch(1, atCtx);
     this.forceKey = true;
     this.lastPunch = this.tapeBase;
     this.lastSnapT = -1e9;
     this.cutStack = [];
     this.matchSig = null;
     this.previewCache = null;
+    this.replay?.dispose();
+    this.replay = null;
     store.set((s) => ({
       phase: 'rolling',
       countdown: null,
-      matchFrame: null,
       matchScore: null,
       teleprompter: null,
       rewind: null,
       slateKey: s.slateKey + 1,
+      lastAction: { kind: 'punch', label: `Take ${s.take}`, id: ++this.actionN },
     }));
   }
 
-  private hold() {
-    const t = this.tapeNow();
-    this.closeStretch(false);
-    this.tapeBase = t;
+  /** Remove the tape after T without a rewind (used to drop a spoken command's dead air). */
+  private async trim(T: number) {
+    await this.video.flush();
+    this.video.truncate(Math.round(T * 1e6));
+    this.pcm.truncate(T * this.pcm.sr);
+    this.snaps.truncate(T);
+    this.scrubs = this.scrubs.filter((s) => s.start < T).map((s) => (s.end > T ? { ...s, end: T } : s));
+    this.tapeBase = T;
+    this.lastFrameTs = this.video.lastTs >= 0 ? this.video.lastTs / 1e6 : -1;
+    this.forceKey = true; // the encoder's reference frame was just dropped
+  }
+
+  private async hold(trimTo: number | null) {
+    const tNow = this.tapeNow();
+    if (trimTo !== null && tNow - trimTo > 0.15) {
+      this.frozen = true;
+      this.closeStretch(true);
+      this.tapeBase = tNow;
+      await this.trim(Math.max(this.lastPunch, trimTo - 0.05));
+      this.frozen = false;
+    } else {
+      this.closeStretch(false);
+      this.tapeBase = tNow;
+    }
     this.openStretch(1 / 8);
-    this.holdStart = { tape: t, ctx: this.resumeCtx };
+    this.holdStart = { tape: this.tapeBase, ctx: this.resumeCtx };
     store.set({ phase: 'hold', holdBadge: null });
+    this.act('hold', 'Hold · 8×', 'hold');
   }
 
   private endHold(resume: boolean) {
@@ -591,10 +737,7 @@ export class Director {
     if (hs) {
       const wall = this.ctxTime - hs.ctx;
       const r: RangeInfo = { id: uid(), kind: 'hold', start: hs.tape, end: t, wall };
-      store.set((s) => ({
-        ranges: [...s.ranges, r],
-        holdBadge: `Held ${Math.round(wall)} s → ${(t - hs.tape).toFixed(1)} s. Nobody will know.`,
-      }));
+      store.set((s) => ({ ranges: [...s.ranges, r], holdBadge: `${Math.round(wall)} s of waiting became ${(t - hs.tape).toFixed(1)} s` }));
       this.after(4000, () => store.set({ holdBadge: null }), 'badge');
     }
     if (resume) {
@@ -602,24 +745,23 @@ export class Director {
       this.tapeBase = t;
       this.openStretch(1);
       store.set({ phase: 'rolling' });
+      this.act('resume', 'Back to 1×', 'rec');
     }
   }
 
-  private sentenceStart(tCut: number, u?: Utt, trailing?: boolean) {
-    if (trailing && u?.onset != null) return u.onset;
-    const before = u?.onset ?? tCut;
-    const prev = this.utts.filter((x) => !x.command && x !== u && x.onset !== null && x.onset < before - 0.05);
-    if (prev.length) return prev[prev.length - 1].onset!;
-    return this.lastPunch;
-  }
-
-  private async cut(o: { utt?: Utt; trailing?: boolean; seconds?: number }) {
+  private async cut(o: { before?: number; seconds?: number }) {
     const tCut = this.tapeNow();
     if (store.get().phase === 'hold') this.endHold(false);
     this.closeStretch(true);
     store.set({ phase: 'rewinding' });
     this.tapeBase = tCut;
-    const T = o.seconds ? tCut - o.seconds : this.sentenceStart(tCut, o.utt, o.trailing);
+    let T: number;
+    if (o.seconds) T = tCut - o.seconds;
+    else {
+      const before = Math.min(o.before ?? tCut, tCut);
+      T = this.pcm.speechStart(before, this.thr) ?? this.lastPunch;
+    }
+    this.act(o.seconds ? 'cutBack' : 'cut', o.seconds ? `Back ${o.seconds} s` : 'Cut', 'cue');
     await this.performCut(T, tCut);
   }
 
@@ -629,13 +771,9 @@ export class Director {
     this.clearTimers('sys');
     const T0 = this.tapeBase;
     store.set({ phase: 'rewinding', countdown: null });
-    let T: number;
-    if (seconds) T = T0 - seconds;
-    else {
-      const prev = this.utts.filter((x) => !x.command && x.onset !== null && x.onset < T0 - 0.3);
-      T = prev.length ? prev[prev.length - 1].onset! : 0;
-    }
+    const T = seconds ? T0 - seconds : (this.pcm.speechStart(T0 - 0.05, this.thr) ?? 0);
     if (T0 < 0.05) toast('Already at the top of the tape.', 'muted');
+    this.act('cut', seconds ? `Back ${seconds} s more` : 'One more line', 'cue');
     await this.performCut(T, T0);
   }
 
@@ -649,32 +787,33 @@ export class Director {
     T = Math.max(0, Math.min(T, tEnd));
     if (tEnd - T > 0.05) {
       // back off a beat, then land on the quietest 10 ms nearby so the splice is inaudible
-      T = Math.max(0, T - 0.1);
-      T = this.pcm.quietestPoint(Math.max(0, T - 0.2), Math.min(T + 0.04, tEnd));
+      T = Math.max(0, T - 0.08);
+      T = this.pcm.quietestPoint(Math.max(0, T - 0.15), Math.min(T + 0.04, tEnd));
     }
     await this.video.flush();
     const sr = this.pcm.sr;
     const st = store.get();
+    let removedAudio: Float32Array | null = null;
+    let otId: string | null = null;
     if (tEnd - T > 0.05) {
       const { removed, prefix } = this.video.truncate(Math.round(T * 1e6));
       const audio = this.pcm.read(T * sr, tEnd * sr);
+      removedAudio = audio;
       this.pcm.truncate(T * sr);
       const snaps = this.snaps.truncate(T);
-      const utts = this.utts.filter((x) => (x.onset ?? 0) >= T);
-      this.utts = this.utts.filter((x) => (x.onset ?? 0) < T);
       const saved = { ranges: st.ranges, chapters: st.chapters, scrubs: this.scrubs, viewHistory: this.viewHistory, take: st.take };
       this.scrubs = this.scrubs.filter((s) => s.start < T).map((s) => (s.end > T ? { ...s, end: T } : s));
       this.viewHistory = this.viewHistory.filter((v) => v.t < T);
-      const text = utts.filter((x) => !x.command).map((x) => x.text).join(' ');
-      const ot: Outtake = { id: uid(), take: st.take, from: T, to: tEnd, prefix, chunks: removed, audio, snaps, utts, saved };
+      const ot: Outtake = { id: uid(), take: st.take, from: T, to: tEnd, prefix, chunks: removed, audio, snaps, saved };
+      otId = ot.id;
       this.outtakes.push(ot);
       this.cutStack.push(ot);
       store.set((s) => ({
         ranges: s.ranges.filter((r) => r.start < T).map((r) => (r.end > T ? { ...r, end: T } : r)),
         chapters: s.chapters.filter((c) => c.t < T),
-        outtakes: [...s.outtakes, { id: ot.id, take: ot.take, from: T, to: tEnd, text, thumb: snaps[0]?.url ?? this.snaps.at(T)?.url ?? null }],
+        outtakes: [...s.outtakes, { id: ot.id, take: ot.take, from: T, to: tEnd, text: '', thumb: snaps[0]?.url ?? this.snaps.at(T)?.url ?? null }],
         take: s.take + 1,
-        teleprompter: utts.find((x) => !x.command)?.text ?? null,
+        teleprompter: null,
       }));
     }
     this.tapeBase = T;
@@ -682,28 +821,55 @@ export class Director {
     this.comp.setView(this.viewAt(T), true);
     store.set({ rewind: { from: tEnd, to: T }, holdBadge: null });
     sounds.rewind(1.1);
+
+    // build the replay while the rewind plays
+    this.replay?.dispose();
+    this.replay = null;
+    const R = Math.min(store.get().settings.replaySeconds, T);
+    if (R > 0.2 && this.video.decoderConfig) {
+      Replay.build(this.video.decoderConfig, this.video.chunks, T - R, T)
+        .then((r) => {
+          if (this.tapeBase === T && ['rewinding', 'preroll'].includes(store.get().phase)) this.replay = r;
+          else r.dispose();
+        })
+        .catch(() => {});
+    }
+    // what you said in the fluffed line → teleprompter + outtake label
+    if (removedAudio && otId && stt.ready.command) {
+      const id = otId;
+      stt
+        .command(to16k(removedAudio.subarray(0, sr * 12), sr))
+        .then((text) => {
+          const clean = text.replace(/\[[^\]]*\]|\([^)]*\)/g, '').trim();
+          store.set((s) => ({
+            outtakes: s.outtakes.map((o) => (o.id === id ? { ...o, text: clean } : o)),
+            teleprompter: ['rewinding', 'preroll'].includes(s.phase) ? clean || null : s.teleprompter,
+          }));
+        })
+        .catch(() => {});
+    }
     this.after(1150, () => this.startPreroll(), 'sys');
   }
 
   private startPreroll() {
     if (store.get().phase !== 'rewinding' || !this.audio) return;
     const T = this.tapeBase;
-    const n = store.get().settings.countdown;
-    const punchAt = this.ctxTime + n;
-    this.punchAt = punchAt;
-    const snap = this.snaps.at(T - 0.05);
-    store.set({ phase: 'preroll', countdown: n, matchFrame: snap?.url ?? null, matchScore: null, rewind: null });
-    sounds.tick();
+    const st = store.get().settings;
+    const R = Math.min(st.replaySeconds, T);
+    const total = Math.max(st.countdown, R > 0.2 ? R : 0);
+    this.prerollTotal = total;
+    this.punchAt = this.ctxTime + total;
+    store.set({ phase: 'preroll', countdown: total <= st.countdown ? st.countdown : null, matchScore: null, rewind: null });
     this.matchSig = null;
-    if (snap)
+    const snap = this.snaps.at(T - 0.05);
+    if (snap && !this.replay)
       createImageBitmap(snap.blob).then((b) => {
-        this.matchSig = signature(b);
+        if (!this.matchSig) this.matchSig = signature(b);
         b.close();
       });
-    if (store.get().settings.prerollAudio && T > 0.1) {
-      const pre = Math.min(2, T);
-      const s = this.pcm.read((T - pre) * this.pcm.sr, T * this.pcm.sr);
-      this.audio.play(s, punchAt - pre, 1);
+    if (st.prerollAudio && R > 0.2) {
+      const s = this.pcm.read((T - R) * this.pcm.sr, T * this.pcm.sr);
+      this.audio.play(s, this.punchAt - R, 1);
     }
   }
 
@@ -720,9 +886,7 @@ export class Director {
       this.video.restore(o.chunks);
       this.pcm.write(o.from * sr, o.audio);
       this.snaps.restore(o.snaps);
-      this.utts.push(...o.utts);
     }
-    this.utts.sort((a, b) => (a.onset ?? 0) - (b.onset ?? 0));
     const first = stack[0];
     this.scrubs = first.saved.scrubs;
     this.viewHistory = first.saved.viewHistory;
@@ -737,7 +901,7 @@ export class Director {
     this.tapeBase = first.to;
     this.lastFrameTs = this.video.lastTs >= 0 ? this.video.lastTs / 1e6 : -1;
     this.comp.setView(this.viewAt(first.to), true);
-    pushTicker({ kind: 'system', text: 'Cut cancelled. Rolling on from where you were.', tone: 'muted' });
+    this.act('scratch', 'Cut cancelled', 'muted');
     this.punchIn(this.ctxTime);
   }
 
@@ -746,30 +910,34 @@ export class Director {
     const r: RangeInfo = { id: uid(), kind: 'redact', start: Math.max(0, t - 5), end: t, rect: { x: 0, y: 0, w: 1, h: 1 } };
     store.set((s) => ({ ranges: [...s.ranges, r] }));
     this.undo.push({ label: 'redaction', fn: () => store.set((s) => ({ ranges: s.ranges.filter((x) => x.id !== r.id) })) });
-    toast('Last 5 s will be blurred. Adjust the box in Dailies.', 'redact');
+    this.act('redact', 'Redact · last 5 s', 'redact');
   }
 
   private addChapter(name: string, t: number) {
     const c = { id: uid(), t: Math.max(0, t), name: name || `Chapter ${store.get().chapters.length + 2}` };
     store.set((s) => ({ chapters: [...s.chapters, c].sort((a, b) => a.t - b.t) }));
     this.undo.push({ label: 'chapter', fn: () => store.set((s) => ({ chapters: s.chapters.filter((x) => x.id !== c.id) })) });
+    this.act('chapter', `Chapter · ${c.name}`, 'ok');
   }
 
   setCamera(on: boolean, record = true) {
     const prev = this.comp.cameraOn;
     this.comp.cameraOn = on;
     store.set({ cameraOn: on });
-    if (record) this.undo.push({ label: 'camera', fn: () => this.setCamera(prev, false) });
+    if (record) {
+      this.undo.push({ label: 'camera', fn: () => this.setCamera(prev, false) });
+      this.act('camera', on ? 'Camera on' : 'Camera off', 'muted');
+    }
   }
 
   private undoLast() {
     const u = this.undo.pop();
     if (!u) return toast('Nothing to undo.', 'muted');
     u.fn();
-    toast(`Undid ${u.label}.`, 'muted');
+    this.act('scratch', `Undid ${u.label}`, 'muted');
   }
 
-  private async wrap(u?: Utt) {
+  private async wrap(startTape: number | null) {
     const ph = store.get().phase;
     let tEnd = this.tapeNow();
     if (ph === 'hold') this.endHold(false);
@@ -778,45 +946,44 @@ export class Director {
       this.punchAt = null;
       this.clearTimers('sys');
       tEnd = this.tapeBase;
-    } else if (u?.onset != null) {
-      tEnd = Math.max(Math.min(u.onset - 0.05, tEnd), Math.min(tEnd, this.lastPunch + 0.2));
+    } else if (startTape !== null) {
+      tEnd = Math.max(Math.min(startTape - 0.05, tEnd), Math.min(tEnd, this.lastPunch + 0.2));
     }
     this.closeStretch(true);
     this.tapeBase = tEnd;
     store.set({ phase: 'wrapped' });
+    this.act('wrap', 'That’s a wrap', 'rec');
     await this.video.flush();
     this.video.truncate(Math.round(tEnd * 1e6));
     this.pcm.truncate(tEnd * this.pcm.sr);
     this.snaps.truncate(tEnd);
-    this.utts = this.utts.filter((x) => (x.onset ?? 0) < tEnd);
     this.scrubs = this.scrubs.filter((s) => s.start < tEnd).map((s) => (s.end > tEnd ? { ...s, end: tEnd } : s));
+    this.replay?.dispose();
+    this.replay = null;
     const last = this.video.chunks[this.video.chunks.length - 1];
     const duration = last ? (last.ts + (last.dur || FD * 1e6)) / 1e6 : tEnd;
     sounds.chime();
-    this.rec?.stop();
-    store.set({ listening: 'off' });
-    this.closeHud();
     this.screenStream?.getTracks().forEach((t) => t.stop());
+    native?.showMain();
     store.set((s) => ({
       screen: 'dailies',
       duration,
       activeMark: null,
       rewind: null,
       countdown: null,
-      matchFrame: null,
       teleprompter: null,
       hasScreen: false,
+      transcript: null,
       ranges: s.ranges.filter((r) => r.start < tEnd).map((r) => (r.end > tEnd ? { ...r, end: tEnd } : r)),
       chapters: s.chapters.filter((c) => c.t < tEnd),
     }));
   }
 
-  /** Clear the tape for a fresh recording (keeps marks and settings). */
+  /** Clear the tape for a fresh recording (keeps marks, mic and settings). */
   reset() {
     this.video.chunks = [];
     this.pcm = new PcmTape(SAMPLE_RATE);
     this.snaps = new Snapshots();
-    this.utts = [];
     this.scrubs = [];
     this.outtakes = [];
     this.cutStack = [];
@@ -826,11 +993,29 @@ export class Director {
     this.tapeBase = 0;
     this.lastFrameTs = -1;
     this.previewCache = null;
-    store.set({ phase: 'idle', take: 1, outtakes: [], ranges: [], chapters: [], duration: 0, ticker: [], screen: 'stage' });
-    this.listen();
+    store.set({ phase: 'idle', take: 1, outtakes: [], ranges: [], chapters: [], duration: 0, log: [], transcript: null, screen: 'stage' });
   }
 
-  // ───────────────────────── export ─────────────────────────
+  // ───────────────────────── review + export ─────────────────────────
+
+  /** Local Whisper over the final cut, for the transcript, captions and post copy. */
+  async transcribe() {
+    const st = store.get();
+    if (st.transcript || st.transcribing) return;
+    store.set({ transcribing: true });
+    try {
+      const raw = this.pcm.read(0, Math.round(st.duration * this.pcm.sr));
+      const sr = this.pcm.sr;
+      for (const s of this.scrubs) raw.fill(0, Math.max(0, Math.round(s.start * sr)), Math.min(raw.length, Math.round(s.end * sr)));
+      const chunks = await stt.transcribe(to16k(raw, sr));
+      const lines = chunks
+        .map((c, i) => ({ start: c.start, end: c.end ?? chunks[i + 1]?.start ?? Math.min(st.duration, c.start + 3), text: c.text.replace(/\[[^\]]*\]|\([^)]*\)/g, '').trim() }))
+        .filter((l) => l.text && !/^(you|thank you\.?|\.+)$/i.test(l.text));
+      store.set({ transcript: lines, transcribing: false });
+    } catch {
+      store.set({ transcript: [], transcribing: false });
+    }
+  }
 
   private keptAudio() {
     const st = store.get();
@@ -905,18 +1090,39 @@ export class Director {
     return URL.createObjectURL(blob);
   }
 
-  /** Kept, spoken (non-command) lines on the final timeline. */
-  transcript() {
-    const dur = store.get().duration;
-    return this.utts
-      .filter((u) => !u.command && u.onset !== null && u.onset < dur && u.text.trim())
-      .map((u) => ({ start: u.onset!, end: Math.min(dur, u.end ?? u.onset! + Math.max(1.2, u.text.split(' ').length * 0.38)), text: u.text.trim() }));
-  }
-
   snapAt(t: number) {
     return this.snaps.at(t);
   }
 }
 
+// ───────────────────────── keyboard (in-app; the desktop shell adds global ones) ─────────────────────────
+
+function matches(e: KeyboardEvent, accel: string) {
+  const parts = accel.toLowerCase().split('+');
+  const key = parts[parts.length - 1];
+  const need = { ctrl: parts.includes('ctrl') || parts.includes('control') || parts.includes('commandorcontrol'), alt: parts.includes('alt'), shift: parts.includes('shift'), meta: parts.includes('super') || parts.includes('cmd') };
+  if (e.ctrlKey !== need.ctrl || e.altKey !== need.alt || e.shiftKey !== need.shift || e.metaKey !== need.meta) return false;
+  const k = e.code.toLowerCase();
+  return key === 'space' ? k === 'space' : k === `key${key}` || k === `digit${key}` || e.key.toLowerCase() === key;
+}
+
+export function keyHandler(e: KeyboardEvent) {
+  if (native) {
+    // global shortcuts are handled by the shell; only Esc is local
+    if (e.key === 'Escape') director.cancelCommand();
+    return;
+  }
+  if (e.key === 'Escape') return director.cancelCommand();
+  const sc = store.get().shortcuts;
+  for (const [name, accel] of Object.entries(sc)) {
+    if (matches(e, accel)) {
+      e.preventDefault();
+      director.hotkey(name);
+      return;
+    }
+  }
+}
+
 export const director = new Director();
 (window as any).take1 = director;
+(window as any).take1Store = store;
