@@ -439,3 +439,29 @@ export const Icon = {
     </svg>
   ),
 };
+
+export const holdToTalk = {
+  onPointerDown: (e: React.PointerEvent) => {
+    e.preventDefault();
+    try {
+      (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+    } catch {
+      /* ignore */
+    }
+    director.startCommand();
+  },
+  onPointerUp: (e: React.PointerEvent) => {
+    e.preventDefault();
+    try {
+      (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
+    } catch {
+      /* ignore */
+    }
+    director.finishCommandSession();
+  },
+  onPointerCancel: () => {
+    director.cancelCommand();
+  },
+  onContextMenu: (e: React.MouseEvent) => e.preventDefault(),
+};
+

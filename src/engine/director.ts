@@ -219,6 +219,11 @@ export class Director {
     }
   }
 
+  async setTalkKey(key: string) {
+    store.set({ talkKey: key });
+    await this.setShortcut('command', key);
+  }
+
   // ───────────────────────── marks ─────────────────────────
 
   addMark(name: string, rect: Rect) {
@@ -516,6 +521,12 @@ export class Director {
     native?.listening(false);
     store.set((s) => ({ listen: { ...s.listen, state: 'off' } }));
     if (msg) toast(msg, 'muted');
+  }
+
+  finishCommandSession() {
+    if (this.session) {
+      this.finishFromAudio();
+    }
   }
 
   private sessionTick() {

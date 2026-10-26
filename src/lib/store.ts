@@ -56,6 +56,13 @@ export const DEFAULT_SHORTCUTS: Record<string, string> = {
   pill: 'Ctrl+Alt+T',
 };
 
+export const TALK_KEYS = [
+  { id: 'Ctrl+Alt+Space', label: 'Ctrl + Alt + Space', note: 'Works anywhere, standard' },
+  { id: 'Alt+Space', label: 'Alt + Space', note: 'Fast, two-key hold' },
+  { id: 'Ctrl+Shift+Space', label: 'Ctrl + Shift + Space', note: 'Alternative chord' },
+  { id: 'RightAlt', label: 'Right Alt', note: 'Single key hold' },
+];
+
 export interface AppState {
   screen: Screen;
   phase: Phase;
@@ -96,6 +103,7 @@ export interface AppState {
   tried: Record<string, boolean>;
   transcript: { start: number; end: number; text: string }[] | null;
   transcribing: boolean;
+  talkKey: string;
   shortcuts: Record<string, string>;
   settings: Settings;
 }
@@ -140,6 +148,7 @@ const initial: AppState = {
   tried: {},
   transcript: null,
   transcribing: false,
+  talkKey: 'Ctrl+Alt+Space',
   shortcuts: { ...DEFAULT_SHORTCUTS },
   settings: { sounds: true, prerollAudio: true, replaySeconds: 5, countdown: 3, pill: true },
 };
