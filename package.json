@@ -2,7 +2,7 @@
   "name": "take1",
   "private": true,
   "version": "0.2.0",
-  "description": "Take1 - a screen recorder you direct with your voice. Mess up out loud. Ship take one.",
+  "description": "Take1: a screen recorder you control with your voice. Say cut to redo a sentence, pause, speed up waits, blur and zoom while recording.",
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
@@ -14,6 +14,12 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@fontsource/anton": "^5.0.0",
+    "@fontsource/bebas-neue": "^5.0.0",
+    "@fontsource/figtree": "^5.0.0",
+    "@fontsource/montserrat": "^5.0.0",
+    "@fontsource/permanent-marker": "^5.0.0",
+    "@fontsource/poppins": "^5.0.0",
     "@huggingface/transformers": "^3.4.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
