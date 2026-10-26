@@ -2,16 +2,17 @@ import { useSyncExternalStore } from 'react';
 
 export type Phase = 'idle' | 'rolling' | 'rewinding' | 'preroll' | 'hold' | 'wrapped';
 export type Screen = 'greenroom' | 'stage' | 'console' | 'dailies' | 'wrap';
-export type Tone = 'tally' | 'cue' | 'hold' | 'redact' | 'ok' | 'muted';
+export type Tone = 'rec' | 'cue' | 'hold' | 'redact' | 'ok' | 'muted';
 
 export interface Rect { x: number; y: number; w: number; h: number }
 
-export interface TickerItem {
+export interface LogItem {
   id: number;
-  kind: 'speech' | 'command' | 'system';
-  text: string;
-  tone?: Tone;
-  struck?: boolean;
+  kind: string; // action kind (cut, hold, …) or 'heard' / 'system'
+  label: string;
+  detail?: string;
+  tone: Tone;
+  at: number; // tape seconds
 }
 
 export interface StageMark { id: string; name: string; rect: Rect }
@@ -30,53 +31,72 @@ export interface RangeInfo {
   kind: 'hold' | 'redact';
   start: number;
   end: number;
-  rect?: Rect; // normalized to the output frame (redact only)
-  wall?: number; // real seconds held (hold only)
+  rect?: Rect;
+  wall?: number;
 }
 
 export interface ChapterInfo { id: string; t: number; name: string }
 
+export type ListenState = 'off' | 'listening' | 'thinking' | 'done' | 'unsure';
+
 export interface Settings {
   sounds: boolean;
   prerollAudio: boolean;
-  strict: boolean;
+  replaySeconds: number;
   countdown: number;
+  pill: boolean;
 }
+
+export const DEFAULT_SHORTCUTS: Record<string, string> = {
+  command: 'Ctrl+Alt+Space',
+  record: 'Ctrl+Alt+R',
+  cut: 'Ctrl+Alt+C',
+  hold: 'Ctrl+Alt+H',
+  mic: 'Ctrl+Alt+M',
+  pill: 'Ctrl+Alt+T',
+};
 
 export interface AppState {
   screen: Screen;
   phase: Phase;
   scene: number;
   take: number;
-  ticker: TickerItem[];
-  interim: string;
-  listening: 'off' | 'on' | 'error' | 'unsupported';
-  listenError: string | null;
+  log: LogItem[];
+  listen: { state: ListenState; heard: string; intent: string | null; alternatives: string[]; id: number };
+  engine: { status: 'idle' | 'loading' | 'ready' | 'error'; progress: number; detail: string | null };
   micOn: boolean;
+  micMuted: boolean;
   micLevel: number;
+  micDevices: { id: string; label: string }[];
+  micDevice: string | null;
   hasScreen: boolean;
   surface: string | null;
+  sourceName: string | null;
   hasCamera: boolean;
   cameraOn: boolean;
   marks: StageMark[];
   activeMark: string | null;
   namingMark: boolean;
   countdown: number | null;
-  matchFrame: string | null;
   matchScore: number | null;
   teleprompter: string | null;
   rewind: { from: number; to: number } | null;
   slateKey: number;
+  lastAction: { kind: string; label: string; id: number } | null;
   outtakes: OuttakeInfo[];
   ranges: RangeInfo[];
   chapters: ChapterInfo[];
   duration: number;
   holdBadge: string | null;
   toast: { id: number; text: string; tone: Tone } | null;
-  hudOpen: boolean;
-  rehearsing: boolean;
-  rehearsal: Record<string, boolean>;
-  lastCommand: string | null;
+  pillOpen: boolean;
+  desktop: boolean;
+  pickingSource: boolean;
+  trying: boolean;
+  tried: Record<string, boolean>;
+  transcript: { start: number; end: number; text: string }[] | null;
+  transcribing: boolean;
+  shortcuts: Record<string, string>;
   settings: Settings;
 }
 
@@ -85,36 +105,43 @@ const initial: AppState = {
   phase: 'idle',
   scene: 1,
   take: 1,
-  ticker: [],
-  interim: '',
-  listening: 'off',
-  listenError: null,
+  log: [],
+  listen: { state: 'off', heard: '', intent: null, alternatives: [], id: 0 },
+  engine: { status: 'idle', progress: 0, detail: null },
   micOn: false,
+  micMuted: false,
   micLevel: 0,
+  micDevices: [],
+  micDevice: null,
   hasScreen: false,
   surface: null,
+  sourceName: null,
   hasCamera: false,
   cameraOn: true,
   marks: [],
   activeMark: null,
   namingMark: false,
   countdown: null,
-  matchFrame: null,
   matchScore: null,
   teleprompter: null,
   rewind: null,
   slateKey: 0,
+  lastAction: null,
   outtakes: [],
   ranges: [],
   chapters: [],
   duration: 0,
   holdBadge: null,
   toast: null,
-  hudOpen: false,
-  rehearsing: false,
-  rehearsal: {},
-  lastCommand: null,
-  settings: { sounds: true, prerollAudio: true, strict: false, countdown: 3 },
+  pillOpen: false,
+  desktop: typeof window !== 'undefined' && !!(window as any).take1Native,
+  pickingSource: false,
+  trying: false,
+  tried: {},
+  transcript: null,
+  transcribing: false,
+  shortcuts: { ...DEFAULT_SHORTCUTS },
+  settings: { sounds: true, prerollAudio: true, replaySeconds: 5, countdown: 3, pill: true },
 };
 
 let state: AppState = initial;
@@ -137,9 +164,9 @@ export function useStore<T>(sel: (s: AppState) => T): T {
   return useSyncExternalStore(store.subscribe, () => sel(state), () => sel(state));
 }
 
-let tickerId = 0;
-export function pushTicker(item: Omit<TickerItem, 'id'>) {
-  store.set((s) => ({ ticker: [...s.ticker.slice(-40), { ...item, id: ++tickerId }] }));
+let logId = 0;
+export function pushLog(item: Omit<LogItem, 'id'>) {
+  store.set((s) => ({ log: [...s.log.slice(-60), { ...item, id: ++logId }] }));
 }
 
 let toastId = 0;
@@ -147,7 +174,7 @@ let toastTimer: ReturnType<typeof setTimeout> | null = null;
 export function toast(text: string, tone: Tone = 'muted') {
   store.set({ toast: { id: ++toastId, text, tone } });
   if (toastTimer) clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => store.set({ toast: null }), 3200);
+  toastTimer = setTimeout(() => store.set({ toast: null }), 3400);
 }
 
 export const uid = () => Math.random().toString(36).slice(2, 9);
