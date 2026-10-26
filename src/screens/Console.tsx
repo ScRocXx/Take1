@@ -1,13 +1,12 @@
 import { useEffect, useState } from 'react';
 import { director } from '../engine/director';
 import { native } from '../lib/native';
-import { useStore, DEFAULT_SHORTCUTS } from '../lib/store';
+import { useStore, DEFAULT_SHORTCUTS, TALK_KEYS } from '../lib/store';
 import { clock } from '../lib/time';
 import { CALL_SHEET } from '../voice/intent';
-import { Button, Glyph, Icon, Keys, LivePreview, MatchMeter, ReplayView, Timecode, Toggle, phaseLabel } from '../ui/components';
+import { Button, Glyph, Icon, Keys, LivePreview, MatchMeter, ReplayView, Timecode, Toggle, holdToTalk, phaseLabel } from '../ui/components';
 
 const SHORTCUT_LABEL: Record<string, string> = {
-  command: 'Give a command',
   record: 'Record / stop',
   cut: 'Cut',
   hold: 'Hold / resume',
@@ -77,7 +76,7 @@ export function Console() {
           {s.phase === 'idle' && (
             <div className="overlay ov-idle">
               <p>
-                Say <em>“action”</em> or press <Keys accel={s.shortcuts.record} />
+                Press <Keys accel={s.shortcuts.record} /> or hold <Keys accel={s.talkKey} /> and say <em>“action”</em>
               </p>
             </div>
           )}
@@ -120,10 +119,10 @@ export function Console() {
             <span>{s.phase === 'hold' ? 'Resume' : 'Hold'}</span>
           </button>
           <span className="dock-sep" />
-          <button className={`dock-voice ls-${s.listen.state}`} onClick={() => director.toggleCommand()}>
+          <button className={`dock-voice ls-${s.listen.state}`} {...holdToTalk}>
             {Icon.voice}
-            <span>{s.listen.state === 'listening' ? 'Listening…' : 'Give a command'}</span>
-            <Keys accel={s.shortcuts.command} />
+            <span>{s.listen.state === 'listening' ? 'Listening… release to send' : 'Hold to talk'}</span>
+            <Keys accel={s.talkKey} />
           </button>
           {!s.pillOpen && (
             <Button kind="quiet" icon={Icon.pop} onClick={() => director.openPill()}>
@@ -180,6 +179,20 @@ export function Console() {
           </label>
           <Toggle label="Replay audio" hint="Use headphones" on={s.settings.prerollAudio} onChange={(v) => director.setSettings({ prerollAudio: v })} />
           <Toggle label="Interface sounds" on={s.settings.sounds} onChange={(v) => director.setSettings({ sounds: v })} />
+          <label className="talk-pick">
+            <span>
+              Hold to talk
+              <small>{TALK_KEYS.find((k) => k.id === s.talkKey)?.note}</small>
+            </span>
+            <select value={s.talkKey} onChange={(e) => director.setTalkKey(e.target.value)}>
+              {TALK_KEYS.map((k) => (
+                <option key={k.id} value={k.id}>
+                  {k.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <p className="muted small">Fn can’t be used: on Windows laptops the Fn key never reaches the operating system.</p>
           <div className="shortcuts">
             {Object.keys(DEFAULT_SHORTCUTS).map((k) => (
               <ShortcutRow key={k} name={k} accel={s.shortcuts[k]} />

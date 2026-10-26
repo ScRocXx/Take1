@@ -3,7 +3,7 @@ import { director } from '../engine/director';
 import { native } from '../lib/native';
 import { store, useStore } from '../lib/store';
 import { INTENT_LABEL, type Intent } from '../voice/intent';
-import { Bars, Button, Glyph, Icon, Keys } from '../ui/components';
+import { Bars, Button, Glyph, Icon, Keys, holdToTalk } from '../ui/components';
 
 const TRY: { key: Intent; examples: string }[] = [
   { key: 'action', examples: '“action” · “we’re live”' },
@@ -26,7 +26,7 @@ export function GreenRoom() {
   const engine = useStore((s) => s.engine);
   const tried = useStore((s) => s.tried);
   const listen = useStore((s) => s.listen);
-  const accel = useStore((s) => s.shortcuts.command);
+  const accel = useStore((s) => s.talkKey);
   const last = useStore((s) => s.lastAction);
   const [busy, setBusy] = useState(false);
   const sup = support();
@@ -56,12 +56,12 @@ export function GreenRoom() {
           Mess up <em>out loud.</em>
         </h1>
         <p className="deck">
-          Take1 records your screen and lets you direct it by voice. Fluff a line, press <Keys accel={accel} /> and say “cut”: it rewinds to the
+          Take1 records your screen and lets you direct it by voice. Fluff a line, hold <Keys accel={accel} />, say “cut” and let go: it rewinds to the
           start of your sentence, replays the last five seconds, and punches you back in. The video is finished when you say “that’s a wrap.”
         </p>
         <ul className="facts">
           <li>
-            <strong>Never always-on.</strong> It only listens for a command after you press the shortcut or click the pill.
+            <strong>Push to talk.</strong> Commands are only heard while you hold the keys. The rest of the time your voice is just narration on the tape.
           </li>
           <li>
             <strong>Say it your way.</strong> “Redo that line” and “we’re done” work as well as the film words.
@@ -131,7 +131,7 @@ export function GreenRoom() {
             <span className="count">{count}/5</span>
           </header>
           <p className="muted">
-            Press <Keys accel={accel} /> {native ? 'from any app' : 'in this window'}, or click the button, then say one of these. Nothing is
+            Hold <Keys accel={accel} /> {native ? 'in any app' : 'in this window'} (or hold the button), say one of these, then let go. Nothing is
             recorded yet.
           </p>
           <div className="try-grid">
@@ -146,9 +146,10 @@ export function GreenRoom() {
             ))}
           </div>
           <div className="row">
-            <Button kind="ink" icon={Icon.voice} onClick={() => director.toggleCommand()} disabled={!micOn}>
-              {listen.state === 'listening' ? 'Listening… (click to stop)' : 'Give a command'}
-            </Button>
+            <button className="btn btn-ink" {...holdToTalk} disabled={!micOn}>
+              {Icon.voice}
+              {listen.state === 'listening' ? 'Listening… release to send' : 'Hold to talk'}
+            </button>
             {listen.heard && listen.state !== 'listening' && (
               <span className="heard">
                 Heard <q>{listen.heard}</q>
