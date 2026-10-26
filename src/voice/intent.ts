@@ -243,5 +243,5 @@ export const CALL_SHEET: { key: Intent; say: string; also: string; does: string 
   { key: 'redact', say: 'Redact that', also: '“blur that”, “that was a secret”', does: 'Blur the last 5 s on export' },
   { key: 'chapter', say: 'Mark it, live demo', also: '“new chapter: setup”', does: 'Drop a named chapter' },
   { key: 'scratch', say: 'Scratch that', also: '“never mind”, “undo”', does: 'Undo, or cancel a Cut while it replays' },
-  { key: 'wrap', say: 'That’s a wrap', also: '“we’re done”, “stop recording”', does: 'Finish and open Dailies' },
+  { key: 'wrap', say: 'That’s a wrap', also: '“we’re done”, “stop recording”', does: 'Finish and open Review' },
 ];

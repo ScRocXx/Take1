@@ -14,6 +14,8 @@ export interface Take1Native {
   setShortcuts(map: Record<string, string>): Promise<Record<string, boolean>>;
   getShortcuts(): Promise<Record<string, string> | null>;
   listening(on: boolean): void;
+  setTalkKey(key: string): Promise<boolean>;
+  talkStatus(): Promise<boolean>;
   getSources(): Promise<NativeSource[]>;
   chooseSource(id: string): Promise<void>;
   pillInteractive(on: boolean): void;

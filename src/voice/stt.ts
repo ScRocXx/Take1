@@ -39,15 +39,20 @@ class Stt {
 
   private onMessage(d: any) {
     if (d.type === 'progress') {
-      this.progress[d.file] = { loaded: d.loaded, total: d.total };
-      const all = Object.values(this.progress);
-      const p = all.reduce((a, x) => a + x.loaded, 0) / Math.max(1, all.reduce((a, x) => a + x.total, 0));
-      if (!this.ready.command) store.set({ engine: { status: 'loading', progress: p, detail: null } });
+      // models share file names, so progress is tracked per model
+      this.progress[`${d.kind}/${d.file}`] = { loaded: d.loaded, total: d.total };
+      const frac = (kinds: string[]) => {
+        const all = Object.entries(this.progress).filter(([k]) => kinds.some((x) => k.startsWith(x + '/'))).map(([, v]) => v);
+        return all.reduce((a, x) => a + x.loaded, 0) / Math.max(1, all.reduce((a, x) => a + x.total, 0));
+      };
+      if (d.kind === 'transcript') store.set({ captions: { status: 'downloading', progress: frac(['transcript']), detail: null } });
+      else if (!this.ready.command) store.set({ engine: { status: 'loading', progress: frac(['command', 'embed']), detail: null } });
       return;
     }
     if (d.type === 'ready') {
       (this.ready as any)[d.kind] = true;
       if (d.kind === 'command') store.set({ engine: { status: 'ready', progress: 1, detail: null } });
+      if (d.kind === 'transcript') store.set({ captions: { status: 'transcribing', progress: 0, detail: null } });
       if (d.kind === 'embed') this.buildPrototypes();
       return;
     }

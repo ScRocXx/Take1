@@ -1,5 +1,7 @@
 import { store, pushLog, toast, uid, DEFAULT_SHORTCUTS, type Rect, type StageMark, type RangeInfo, type Tone } from '../lib/store';
 import { native } from '../lib/native';
+import { library } from '../lib/library';
+import { toCues } from '../features/packet';
 import { AudioEngine, PcmTape, SAMPLE_RATE } from './audio';
 import { Compositor, signature, matchScore } from './compositor';
 import { VideoTape, type Chunk } from './videoTape';
@@ -53,6 +55,7 @@ interface Outtake {
 }
 
 interface Session {
+  hold: boolean;
   startCtx: number;
   startTape: number | null;
   buf: Float32Array[];
@@ -106,7 +109,12 @@ export class Director {
   constructor() {
     if (native) {
       native.onHotkey((name) => this.hotkey(name));
-      native.getShortcuts().then((s) => s && store.set({ shortcuts: { ...DEFAULT_SHORTCUTS, ...s } }));
+      native.getShortcuts().then((s) => {
+        if (!s) return;
+        const { talk, ...rest } = s as Record<string, string>;
+        store.set({ shortcuts: { ...DEFAULT_SHORTCUTS, ...rest }, ...(talk ? { talkKey: talk } : {}) });
+      });
+      native.talkStatus().then((ok) => store.set({ talkHook: ok }));
     }
   }
 
@@ -209,6 +217,14 @@ export class Director {
     if (p.sounds !== undefined) setSoundsEnabled(p.sounds);
   }
 
+  async setTalkKey(key: string) {
+    store.set({ talkKey: key });
+    if (native) {
+      const ok = await native.setTalkKey(key);
+      if (!ok) toast('Push-to-talk needs the keyboard hook, which didn’t load. Click and hold the pill’s voice button instead.', 'rec');
+    }
+  }
+
   async setShortcut(name: string, accel: string) {
     const next = { ...store.get().shortcuts, [name]: accel };
     store.set({ shortcuts: next });
@@ -217,11 +233,6 @@ export class Director {
       const bad = Object.entries(ok).filter(([, v]) => !v).map(([k]) => k);
       if (bad.length) toast(`Couldn’t register ${bad.join(', ')}: another app may own that shortcut.`, 'rec');
     }
-  }
-
-  async setTalkKey(key: string) {
-    store.set({ talkKey: key });
-    await this.setShortcut('command', key);
   }
 
   // ───────────────────────── marks ─────────────────────────
@@ -297,6 +308,8 @@ export class Director {
     root.id = 'pill-root';
     w.document.body.appendChild(root);
     w.addEventListener('keydown', (e) => keyHandler(e));
+    w.addEventListener('keyup', (e) => keyUpHandler(e));
+    w.addEventListener('blur', () => releaseKeys());
     this.pillWin = w;
     this.pillRoot = root;
     store.set({ pillOpen: true });
@@ -450,8 +463,12 @@ export class Director {
 
   hotkey(name: string) {
     switch (name) {
-      case 'command':
-        return this.toggleCommand();
+      case 'command:down':
+        return this.commandDown();
+      case 'command:up':
+        return this.commandUp();
+      case 'command:cancel':
+        return this.cancelCommand();
       case 'record':
         return this.record();
       case 'cut':
@@ -467,13 +484,23 @@ export class Director {
     }
   }
 
-  async toggleCommand() {
-    if (this.session) {
-      // second press ends listening early (if there was speech) or cancels
-      if (this.session.speech && !this.session.web) return this.finishFromAudio();
-      return this.cancelCommand();
-    }
-    return this.startCommand();
+  /**
+   * Push-to-talk. Commands are only heard while the talk key (default Ctrl+Shift)
+   * or the pill's voice button is held. Released = not listening; everything you
+   * say then is just narration on the tape.
+   */
+  commandDown() {
+    if (this.session) return;
+    this.startCommand();
+  }
+
+  commandUp() {
+    const s = this.session;
+    if (!s) return;
+    if (s.web) return s.web.stop(); // the browser fallback finalizes its result
+    const held = this.ctxTime - s.startCtx;
+    if (!s.speech) return this.cancelCommand(held > 0.6 ? 'Didn’t hear a command. Speak while holding the keys.' : undefined);
+    this.finishFromAudio();
   }
 
   async startCommand() {
@@ -496,13 +523,13 @@ export class Director {
       return;
     }
     const live = st.phase === 'rolling' || st.phase === 'hold';
-    const ses: Session = { startCtx: this.ctxTime, startTape: live ? this.tapeNow() : null, buf: [], speech: false, lastLoud: this.ctxTime };
+    const ses: Session = { hold: true, startCtx: this.ctxTime, startTape: live ? this.tapeNow() : null, buf: [], speech: false, lastLoud: this.ctxTime };
     this.session = ses;
     native?.listening(true);
     store.set((s) => ({ listen: { state: 'listening', heard: '', intent: null, alternatives: [], id: s.listen.id + 1 } }));
     sounds.ping();
     if (useWeb) {
-      const h = listenOnce(6000);
+      const h = listenOnce(20000);
       ses.web = h;
       h.promise.then((text) => {
         if (this.session !== ses) return;
@@ -523,19 +550,12 @@ export class Director {
     if (msg) toast(msg, 'muted');
   }
 
-  finishCommandSession() {
-    if (this.session) {
-      this.finishFromAudio();
-    }
-  }
-
   private sessionTick() {
     const s = this.session;
     if (!s || s.web) return;
     const now = this.ctxTime;
-    if (s.speech && now - s.lastLoud > 0.65) this.finishFromAudio();
-    else if (!s.speech && now - s.startCtx > 4.5) this.cancelCommand('Didn’t hear a command.');
-    else if (now - s.startCtx > 8) this.finishFromAudio();
+    // released keys end the session; this only guards against a stuck key
+    if (now - s.startCtx > 15) s.speech ? this.finishFromAudio() : this.cancelCommand();
   }
 
   private async finishFromAudio() {
@@ -561,7 +581,7 @@ export class Director {
   }
 
   private unsure(heard: string, alternatives: string[]) {
-    store.set((x) => ({ listen: { ...x.listen, state: 'unsure', heard, alternatives } }));
+    store.set((x) => ({ listen: { ...x.listen, state: 'unsure', heard, intent: null, alternatives } }));
     const id = store.get().listen.id;
     this.after(4000, () => store.get().listen.id === id && store.set((x) => ({ listen: { ...x.listen, state: 'off' } })), 'listen');
   }
@@ -584,7 +604,7 @@ export class Director {
   /** Act as if a command session just heard `text` (tests, demos). */
   async simulate(text: string, secondsAgo = 1) {
     const live = ['rolling', 'hold'].includes(store.get().phase);
-    const s: Session = { startCtx: this.ctxTime - secondsAgo, startTape: live ? Math.max(0, this.tapeNow() - secondsAgo) : null, buf: [], speech: true, lastLoud: this.ctxTime };
+    const s: Session = { hold: true, startCtx: this.ctxTime - secondsAgo, startTape: live ? Math.max(0, this.tapeNow() - secondsAgo) : null, buf: [], speech: true, lastLoud: this.ctxTime };
     store.set((x) => ({ listen: { ...x.listen, id: x.listen.id + 1 } }));
     await this.finishCommand(text, s);
   }
@@ -683,7 +703,7 @@ export class Director {
     if (!this.audio) return;
     this.tapeBase = 0;
     this.lastFrameTs = -1;
-    store.set({ take: 1 });
+    store.set({ take: 1, sessionId: uid(), title: '', transcript: null, captions: { status: 'idle', progress: 0, detail: null } });
     this.punchIn(this.ctxTime);
     this.act('action', 'Action', 'rec');
   }
@@ -770,7 +790,12 @@ export class Director {
     if (o.seconds) T = tCut - o.seconds;
     else {
       const before = Math.min(o.before ?? tCut, tCut);
-      T = this.pcm.speechStart(before, this.thr) ?? this.lastPunch;
+      const s = this.pcm.speechStart(before, this.thr);
+      if (s === null) {
+        // no sentence on the tape (mic muted or silent): never throw away the whole take, step back 5 s
+        T = Math.max(this.lastPunch, tCut - 5);
+        toast('Didn’t hear a sentence, so I went back 5 s.', 'muted');
+      } else T = s;
     }
     this.act(o.seconds ? 'cutBack' : 'cut', o.seconds ? `Back ${o.seconds} s` : 'Cut', 'cue');
     await this.performCut(T, tCut);
@@ -782,7 +807,7 @@ export class Director {
     this.clearTimers('sys');
     const T0 = this.tapeBase;
     store.set({ phase: 'rewinding', countdown: null });
-    const T = seconds ? T0 - seconds : (this.pcm.speechStart(T0 - 0.05, this.thr) ?? 0);
+    const T = seconds ? T0 - seconds : (this.pcm.speechStart(T0 - 0.05, this.thr) ?? Math.max(0, T0 - 5));
     if (T0 < 0.05) toast('Already at the top of the tape.', 'muted');
     this.act('cut', seconds ? `Back ${seconds} s more` : 'One more line', 'cue');
     await this.performCut(T, T0);
@@ -1004,27 +1029,35 @@ export class Director {
     this.tapeBase = 0;
     this.lastFrameTs = -1;
     this.previewCache = null;
-    store.set({ phase: 'idle', take: 1, outtakes: [], ranges: [], chapters: [], duration: 0, log: [], transcript: null, screen: 'stage' });
+    store.set({ phase: 'idle', take: 1, outtakes: [], ranges: [], chapters: [], duration: 0, log: [], transcript: null, screen: 'stage', sessionId: '', title: '', captions: { status: 'idle', progress: 0, detail: null } });
   }
 
   // ───────────────────────── review + export ─────────────────────────
 
-  /** Local Whisper over the final cut, for the transcript, captions and post copy. */
+  /** Local Whisper over the final cut: transcript, captions and post copy. Runs when you ask for it. */
   async transcribe() {
     const st = store.get();
-    if (st.transcript || st.transcribing) return;
-    store.set({ transcribing: true });
+    if (st.transcribing) return st.transcript;
+    if (st.transcript?.length) return st.transcript;
+    store.set({ transcribing: true, captions: { status: stt.ready.transcript ? 'transcribing' : 'downloading', progress: 0, detail: null } });
     try {
       const raw = this.pcm.read(0, Math.round(st.duration * this.pcm.sr));
       const sr = this.pcm.sr;
       for (const s of this.scrubs) raw.fill(0, Math.max(0, Math.round(s.start * sr)), Math.min(raw.length, Math.round(s.end * sr)));
       const chunks = await stt.transcribe(to16k(raw, sr));
       const lines = chunks
-        .map((c, i) => ({ start: c.start, end: c.end ?? chunks[i + 1]?.start ?? Math.min(st.duration, c.start + 3), text: c.text.replace(/\[[^\]]*\]|\([^)]*\)/g, '').trim() }))
+        .map((c, i) => ({ start: c.start, end: Math.min(st.duration, c.end ?? chunks[i + 1]?.start ?? c.start + 3), text: c.text.replace(/\[[^\]]*\]|\([^)]*\)/g, '').trim() }))
         .filter((l) => l.text && !/^(you|thank you\.?|\.+)$/i.test(l.text));
-      store.set({ transcript: lines, transcribing: false });
-    } catch {
-      store.set({ transcript: [], transcribing: false });
+      store.set({
+        transcript: lines,
+        transcribing: false,
+        captions: { status: lines.length ? 'ready' : 'error', progress: 1, detail: lines.length ? null : 'No speech found in the final cut.' },
+      });
+      if (st.sessionId && lines.length) library.update(st.sessionId, { transcript: lines });
+      return lines;
+    } catch (e) {
+      store.set({ transcript: null, transcribing: false, captions: { status: 'error', progress: 0, detail: String((e as Error)?.message ?? e) } });
+      return null;
     }
   }
 
@@ -1043,19 +1076,23 @@ export class Director {
     return this.previewCache;
   }
 
-  /** Final render: re-encodes only when there are redactions to burn in. */
-  async exportFinal(onProgress?: (p: number) => void) {
-    const redactions = store.get().ranges.filter((r) => r.kind === 'redact' && r.rect) as { start: number; end: number; rect: Rect }[];
+  /** Final render. Re-encodes only when something must be burned in (redactions, captions). */
+  async exportFinal(onProgress?: (p: number) => void, opts: { captions?: boolean } = {}) {
+    const st = store.get();
+    const redactions = st.ranges.filter((r) => r.kind === 'redact' && r.rect) as { start: number; end: number; rect: Rect }[];
+    const cues = opts.captions && st.transcript?.length ? toCues(st.transcript) : undefined;
+    if (!this.video.chunks.length) throw new Error('There’s nothing on the tape to export. Record a take first.');
     onProgress?.(0.02);
     let video = { codec: this.video.codec, width: this.comp.W, height: this.comp.H, description: this.video.decoderConfig?.description as AllowSharedBufferSource | undefined, chunks: this.video.chunks };
-    if (redactions.length && this.video.decoderConfig) {
-      const dur = Math.round(store.get().duration * 1e6);
+    if ((redactions.length || cues) && this.video.decoderConfig) {
+      const dur = Math.round(st.duration * 1e6);
       const r = await renderClips({
         config: this.video.decoderConfig,
         width: this.comp.W,
         height: this.comp.H,
         clips: [{ chunks: this.video.chunks, from: 0, to: dur + 1 }],
         redactions,
+        captions: cues,
         onProgress: (p) => onProgress?.(p * 0.85),
       });
       video = { ...video, codec: r.codec, chunks: r.chunks, description: r.description };
@@ -1064,7 +1101,40 @@ export class Director {
     const audio = await encodeAudio(this.keptAudio(), this.pcm.sr);
     const blob = buildMp4(video, audio);
     onProgress?.(1);
-    return { blob, url: URL.createObjectURL(blob), rerendered: redactions.length > 0 };
+    await this.saveToLibrary(blob, !!cues);
+    return { blob, url: URL.createObjectURL(blob), rerendered: redactions.length > 0 || !!cues };
+  }
+
+  /** Every printed master lands in your library (re-prints update the same entry). */
+  private async saveToLibrary(video: Blob, captionsBurned: boolean) {
+    const st = store.get();
+    if (!st.sessionId) return;
+    try {
+      const prev = await library.get(st.sessionId);
+      const held = st.ranges.filter((r) => r.kind === 'hold').reduce((a, r) => a + (r.wall ?? 0) - (r.end - r.start), 0);
+      await library.put({
+        id: st.sessionId,
+        title: st.title || prev?.title || 'Untitled take',
+        createdAt: prev?.createdAt ?? Date.now(),
+        duration: st.duration,
+        retakes: st.outtakes.length,
+        held,
+        video,
+        thumb: this.snaps.at(st.duration * 0.3)?.blob ?? null,
+        transcript: st.transcript ?? prev?.transcript ?? null,
+        chapters: st.chapters.map((c) => ({ t: c.t, name: c.name })),
+        captionsBurned,
+      });
+    } catch {
+      toast('Couldn’t save to your library (storage full or blocked).', 'rec');
+    }
+  }
+
+  setTitle(title: string) {
+    store.set({ title });
+    const id = store.get().sessionId;
+    this.clearTimers('title');
+    if (id) this.after(600, () => library.update(id, { title: title || 'Untitled take' }), 'title');
   }
 
   private outtakeClip(o: Outtake, label?: string): Clip {
@@ -1108,6 +1178,16 @@ export class Director {
 
 // ───────────────────────── keyboard (in-app; the desktop shell adds global ones) ─────────────────────────
 
+const TALK_MODS: Record<string, { ctrl: boolean; alt: boolean; shift: boolean; meta: boolean; code?: string }> = {
+  'Ctrl+Shift': { ctrl: true, alt: false, shift: true, meta: false },
+  'Ctrl+Win': { ctrl: true, alt: false, shift: false, meta: true },
+  'Alt+Shift': { ctrl: false, alt: true, shift: true, meta: false },
+  RightCtrl: { ctrl: true, alt: false, shift: false, meta: false, code: 'ControlRight' },
+};
+const MODIFIER = /^(Control|Shift|Alt|Meta|OS)$/;
+let talkTimer: ReturnType<typeof setTimeout> | null = null;
+let talking = false;
+
 function matches(e: KeyboardEvent, accel: string) {
   const parts = accel.toLowerCase().split('+');
   const key = parts[parts.length - 1];
@@ -1117,13 +1197,38 @@ function matches(e: KeyboardEvent, accel: string) {
   return key === 'space' ? k === 'space' : k === `key${key}` || k === `digit${key}` || e.key.toLowerCase() === key;
 }
 
+function trackKeys(e: KeyboardEvent) {
+  const k = { ctrl: e.ctrlKey, shift: e.shiftKey, alt: e.altKey, meta: e.metaKey };
+  const cur = store.get().keysDown;
+  if (k.ctrl !== cur.ctrl || k.shift !== cur.shift || k.alt !== cur.alt || k.meta !== cur.meta) store.set({ keysDown: k });
+}
+
 export function keyHandler(e: KeyboardEvent) {
-  if (native) {
-    // global shortcuts are handled by the shell; only Esc is local
-    if (e.key === 'Escape') director.cancelCommand();
+  trackKeys(e);
+  if (e.key === 'Escape') return director.cancelCommand();
+  if (native) return; // global keys (incl. the talk key) come from the shell's keyboard hook
+  const combo = TALK_MODS[store.get().talkKey];
+  if (MODIFIER.test(e.key)) {
+    const exact = combo && e.ctrlKey === combo.ctrl && e.altKey === combo.alt && e.shiftKey === combo.shift && e.metaKey === combo.meta && (!combo.code || e.code === combo.code);
+    if (exact && !talking && !talkTimer && !e.repeat) {
+      // a short grace period so Ctrl+Shift+T and friends don't open a session
+      talkTimer = setTimeout(() => {
+        talkTimer = null;
+        talking = true;
+        director.commandDown();
+      }, 140);
+    }
     return;
   }
-  if (e.key === 'Escape') return director.cancelCommand();
+  // a real key pressed while holding the talk keys = it was a shortcut, not a command
+  if (talkTimer) {
+    clearTimeout(talkTimer);
+    talkTimer = null;
+  }
+  if (talking) {
+    talking = false;
+    director.cancelCommand();
+  }
   const sc = store.get().shortcuts;
   for (const [name, accel] of Object.entries(sc)) {
     if (matches(e, accel)) {
@@ -1134,6 +1239,36 @@ export function keyHandler(e: KeyboardEvent) {
   }
 }
 
+/** Window lost focus mid-hold (alt-tab): treat it as releasing the keys. */
+export function releaseKeys() {
+  store.set({ keysDown: { ctrl: false, shift: false, alt: false, meta: false } });
+  if (talkTimer) {
+    clearTimeout(talkTimer);
+    talkTimer = null;
+  }
+  if (talking) {
+    talking = false;
+    director.commandUp();
+  }
+}
+
+export function keyUpHandler(e: KeyboardEvent) {
+  trackKeys(e);
+  if (native || !MODIFIER.test(e.key)) return;
+  if (talkTimer) {
+    clearTimeout(talkTimer);
+    talkTimer = null;
+  }
+  if (talking) {
+    talking = false;
+    director.commandUp();
+  }
+}
+
 export const director = new Director();
 (window as any).take1 = director;
 (window as any).take1Store = store;
+
+// The director owns the live tape. Hot-swapping it would leave the UI pointing at an empty recorder,
+// so any code change that reaches this module reloads the page instead.
+(import.meta as any).hot?.decline();

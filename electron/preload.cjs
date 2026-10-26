@@ -7,6 +7,8 @@ contextBridge.exposeInMainWorld('take1Native', {
   getShortcuts: () => ipcRenderer.invoke('shortcuts:get'),
   setShortcuts: (map) => ipcRenderer.invoke('shortcuts:set', map),
   listening: (on) => ipcRenderer.send('listening', !!on),
+  setTalkKey: (key) => ipcRenderer.invoke('talk:set', key),
+  talkStatus: () => ipcRenderer.invoke('talk:status'),
   getSources: () => ipcRenderer.invoke('sources:list'),
   chooseSource: (id) => ipcRenderer.invoke('sources:choose', id),
   pillInteractive: (on) => ipcRenderer.send('pill:interactive', !!on),

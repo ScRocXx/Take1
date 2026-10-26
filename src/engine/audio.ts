@@ -113,7 +113,9 @@ export class PcmTape {
         if (quiet >= gapN) return a + (j + quiet) * 0.01;
       } else quiet = 0;
     }
-    return a; // speech runs back to the start of the window
+    // no pause anywhere: either the sentence started with the tape, or the room is noisy enough to
+    // look like speech. Only trust the first case for a short tape; otherwise let the caller step back.
+    return a === 0 && before < 6 ? 0 : null;
   }
 
   /** Quietest 10 ms point between two times (seconds): where a splice is inaudible. */

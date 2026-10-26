@@ -18,22 +18,33 @@ function wrapCaption(text: string, max = 42) {
   return rows;
 }
 
-export function toSrt(lines: Line[]) {
+/** Split transcript segments into readable cues: at most two rows of ~42 characters each. */
+export function toCues(lines: Line[]): Line[] {
   const cues: Line[] = [];
   for (const l of lines) {
     const rows = wrapCaption(l.text);
-    // more than two rows → split the line in time proportionally
     const groups: string[][] = [];
     for (let i = 0; i < rows.length; i += 2) groups.push(rows.slice(i, i + 2));
     const total = groups.reduce((a, g) => a + g.join(' ').length, 0) || 1;
     let t = l.start;
     for (const g of groups) {
       const d = ((l.end - l.start) * g.join(' ').length) / total;
-      cues.push({ start: t, end: t + d, text: g.join('\n') });
+      cues.push({ start: t, end: Math.max(t + d, t + 0.6), text: g.join('\n') });
       t += d;
     }
   }
-  return cues.map((c, i) => `${i + 1}\n${srtTime(c.start)} --> ${srtTime(Math.max(c.end, c.start + 0.6))}\n${c.text}\n`).join('\n');
+  return cues;
+}
+
+export function toSrt(lines: Line[]) {
+  return toCues(lines)
+    .map((c, i) => `${i + 1}\n${srtTime(c.start)} --> ${srtTime(c.end)}\n${c.text}\n`)
+    .join('\n');
+}
+
+export function toVtt(lines: Line[]) {
+  const t = (s: number) => srtTime(s).replace(',', '.');
+  return 'WEBVTT\n\n' + toCues(lines).map((c) => `${t(c.start)} --> ${t(c.end)}\n${c.text}\n`).join('\n');
 }
 
 export function toChapters(chapters: ChapterInfo[], duration: number) {
@@ -88,5 +99,10 @@ export function guessTitle(lines: Line[]) {
   const first = lines[0]?.text ?? '';
   const m = first.match(/(?:this is|introducing|meet|i built|we built|i made)\s+(.{3,40}?)(?:[,.!?]|$)/i);
   if (m) return m[1].replace(/^\w/, (c) => c.toUpperCase());
+  // otherwise the opening words of the first sentence, if there are enough of them
+  const words = first.replace(/[.!?].*$/, '').trim().split(/\s+/).filter(Boolean);
+  if (words.length >= 3) return (words.slice(0, 7).join(' ') + (words.length > 7 ? '…' : '')).replace(/^\w/, (c) => c.toUpperCase());
   return 'My Take1 demo';
 }
+
+
