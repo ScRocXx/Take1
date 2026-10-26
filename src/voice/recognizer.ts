@@ -1,87 +1,46 @@
 /**
- * Streaming speech recognition (Web Speech API, Chrome/Edge).
- * Emits interim + final text per utterance, with the AudioContext time the
- * utterance was first heard so the director can find its true onset.
+ * Fallback for when the local engine hasn't loaded yet (browser only):
+ * a single short Web Speech session that returns one phrase. Never runs
+ * continuously, so there is no session that can silently expire.
  */
-
-export interface SpeechEvent {
-  type: 'interim' | 'final';
-  key: string;
-  text: string;
-  firstHeard: number;
+export function webSpeechAvailable() {
+  return !!((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition) && !(window as any).take1Native;
 }
 
-export class Recognizer {
-  private rec: any = null;
-  private active = false;
-  private session = 0;
-  private seen = new Map<number, number>();
-
-  constructor(
-    private now: () => number,
-    private onSpeech: (e: SpeechEvent) => void,
-    private onStatus: (s: 'on' | 'off' | 'error', detail?: string) => void,
-  ) {}
-
-  static get supported() {
-    return !!((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
-  }
-
-  start() {
-    if (this.active) return;
-    this.active = true;
-    this.spawn();
-  }
-
-  private spawn() {
-    const R = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!R) return this.onStatus('error', 'unsupported');
-    const r = new R();
-    r.continuous = true;
-    r.interimResults = true;
-    r.lang = navigator.language?.startsWith('en') ? navigator.language : 'en-US';
-    r.maxAlternatives = 1;
-    const session = ++this.session;
-    this.seen = new Map();
+export function listenOnce(timeoutMs = 6000): { promise: Promise<string>; stop: () => void } {
+  const R = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+  const r = new R();
+  r.continuous = false;
+  r.interimResults = false;
+  r.lang = 'en-US';
+  r.maxAlternatives = 3;
+  let done = false;
+  const promise = new Promise<string>((resolve) => {
+    const finish = (t: string) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      try {
+        r.stop();
+      } catch {
+        /* ignore */
+      }
+      resolve(t);
+    };
+    const timer = setTimeout(() => finish(''), timeoutMs);
     r.onresult = (e: any) => {
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        const res = e.results[i];
-        const text = String(res[0]?.transcript ?? '').trim();
-        if (!text) continue;
-        if (!this.seen.has(i)) this.seen.set(i, this.now());
-        this.onSpeech({ type: res.isFinal ? 'final' : 'interim', key: `${session}:${i}`, text, firstHeard: this.seen.get(i)! });
+      const alts = e.results[0];
+      // prefer an alternative that looks like a command word
+      let best = alts[0]?.transcript ?? '';
+      for (let i = 0; i < alts.length; i++) if (/\b(wrap|cut|hold|action|redact|zoom|wide|undo)\b/i.test(alts[i].transcript)) {
+        best = alts[i].transcript;
+        break;
       }
+      finish(best);
     };
-    r.onerror = (e: any) => {
-      if (e.error === 'not-allowed' || e.error === 'service-not-allowed' || e.error === 'audio-capture') {
-        this.active = false;
-        this.onStatus('error', e.error);
-      }
-    };
-    r.onend = () => {
-      if (this.active && session === this.session) {
-        try {
-          this.spawn();
-        } catch {
-          setTimeout(() => this.spawn(), 250);
-        }
-      } else if (!this.active) this.onStatus('off');
-    };
-    this.rec = r;
-    try {
-      r.start();
-      this.onStatus('on');
-    } catch (err) {
-      this.onStatus('error', String(err));
-    }
-  }
-
-  stop() {
-    this.active = false;
-    try {
-      this.rec?.stop();
-    } catch {
-      /* ignore */
-    }
-  }
+    r.onerror = () => finish('');
+    r.onend = () => finish('');
+    r.start();
+  });
+  return { promise, stop: () => r.stop() };
 }
