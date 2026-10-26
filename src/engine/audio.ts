@@ -76,6 +76,46 @@ export class PcmTape {
     this.length = index;
   }
 
+  /** RMS of 10 ms windows between two times (seconds). */
+  private envelope(a: number, b: number) {
+    const win = Math.round(this.sr * 0.01);
+    const s = this.read(a * this.sr, b * this.sr);
+    const out = new Float32Array(Math.floor(s.length / win));
+    for (let k = 0; k < out.length; k++) {
+      let e = 0;
+      for (let i = k * win; i < (k + 1) * win; i++) e += s[i] * s[i];
+      out[k] = Math.sqrt(e / win);
+    }
+    return out;
+  }
+
+  /**
+   * Where did the last sentence before `before` start? Walks back over any
+   * trailing silence, through the speech, until a pause of `gap` seconds.
+   * Returns null if there's no speech in the last `lookback` seconds.
+   */
+  speechStart(before: number, thr: number, gap = 0.38, lookback = 20): number | null {
+    const a = Math.max(0, before - lookback);
+    const env = this.envelope(a, before);
+    const gapN = Math.round(gap / 0.01);
+    let j = env.length - 1;
+    // skip trailing quiet (up to 4 s) — e.g. the pause before you said "cut"
+    let skipped = 0;
+    while (j >= 0 && env[j] < thr && skipped < 400) {
+      j--;
+      skipped++;
+    }
+    if (j < 0 || env[j] < thr) return null;
+    let quiet = 0;
+    for (; j >= 0; j--) {
+      if (env[j] < thr) {
+        quiet++;
+        if (quiet >= gapN) return a + (j + quiet) * 0.01;
+      } else quiet = 0;
+    }
+    return a; // speech runs back to the start of the window
+  }
+
   /** Quietest 10 ms point between two times (seconds): where a splice is inaudible. */
   quietestPoint(a: number, b: number): number {
     const win = Math.round(this.sr * 0.01);
@@ -121,21 +161,44 @@ export class AudioEngine {
     return this.ctx.sampleRate;
   }
 
-  async start() {
+  private src: MediaStreamAudioSourceNode | null = null;
+  private loaded = false;
+  deviceId: string | null = null;
+
+  async start(deviceId?: string) {
     await this.ctx.resume();
-    if (this.stream) return;
-    this.stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: false, channelCount: 1 },
+    if (this.stream && (deviceId === undefined || deviceId === this.deviceId)) return;
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: false,
+        channelCount: 1,
+        ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
+      },
     });
-    const url = URL.createObjectURL(new Blob([WORKLET], { type: 'text/javascript' }));
-    await this.ctx.audioWorklet.addModule(url);
-    const src = this.ctx.createMediaStreamSource(this.stream);
-    this.node = new AudioWorkletNode(this.ctx, 'take1-tap', { numberOfInputs: 1, numberOfOutputs: 1 });
-    const sink = this.ctx.createGain();
-    sink.gain.value = 0;
-    src.connect(this.node);
-    this.node.connect(sink).connect(this.ctx.destination);
-    this.node.port.onmessage = (e) => this.handle(e.data.s as Float32Array, e.data.t as number);
+    if (!this.loaded) {
+      const url = URL.createObjectURL(new Blob([WORKLET], { type: 'text/javascript' }));
+      await this.ctx.audioWorklet.addModule(url);
+      this.node = new AudioWorkletNode(this.ctx, 'take1-tap', { numberOfInputs: 1, numberOfOutputs: 1 });
+      const sink = this.ctx.createGain();
+      sink.gain.value = 0;
+      this.node.connect(sink).connect(this.ctx.destination);
+      this.node.port.onmessage = (e) => this.handle(e.data.s as Float32Array, e.data.t as number);
+      this.loaded = true;
+    }
+    // hot-swap the input without touching the worklet (safe mid-take)
+    this.src?.disconnect();
+    this.stream?.getTracks().forEach((t) => t.stop());
+    this.stream = stream;
+    this.deviceId = stream.getAudioTracks()[0]?.getSettings().deviceId ?? deviceId ?? null;
+    this.src = this.ctx.createMediaStreamSource(stream);
+    this.src.connect(this.node!);
+  }
+
+  static async inputs() {
+    const list = await navigator.mediaDevices.enumerateDevices();
+    return list.filter((d) => d.kind === 'audioinput').map((d) => ({ id: d.deviceId, label: d.label || 'Microphone' }));
   }
 
   private handle(s: Float32Array, t: number) {
@@ -218,9 +281,9 @@ export class AudioEngine {
   }
 
   stop() {
+    this.src?.disconnect();
+    this.src = null;
     this.stream?.getTracks().forEach((t) => t.stop());
     this.stream = null;
-    this.node?.disconnect();
-    this.node = null;
   }
 }
