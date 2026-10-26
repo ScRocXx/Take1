@@ -1,80 +1,99 @@
-# take/1
+# Take1
 
 **Mess up out loud. Ship take one.**
 
-Take1 is a screen recorder you direct with your voice. Fluff a line, say **“Cut”**, and it rewinds to the start of that sentence, counts you back in with a pre-roll, and splices the retake. Say **“That’s a wrap”** and the video is already finished: MP4, captions, chapters and a submission post.
+Take1 is a screen recorder you direct with your voice. Fluff a line, press **Ctrl + Alt + Space** and say “cut” (or “redo that line”). It rewinds to the start of your sentence, replays the last five seconds so you can find your rhythm, and punches you back in. Say “that’s a wrap” and the video is finished: MP4, captions, chapters, a submission post and a blooper reel.
 
 Built for the Wispr Flow #NoHandsChallenge.
 
 ## Run it
 
-Needs Node 18+ and **Chrome or Edge on desktop** (WebCodecs, Web Speech, Document Picture-in-Picture).
+Needs Node 18+.
 
 ```bash
 npm install
-npm run dev        # opens http://localhost:5173
+npm run app        # desktop app: global hotkeys + floating pill (recommended)
+npm run app:dev    # same, with hot reload
+npm run dev        # browser only (Chrome / Edge)
 ```
 
-Wear headphones: the pre-roll plays your last two seconds back to you before each punch-in.
+The first time you turn the mic on, the local voice engine downloads (about 60 MB, once). After that it runs offline on your machine.
 
-## The flow
+## How you use it
 
-1. **Green room**: mic check and a rehearsal that teaches the five core commands. Nothing is recorded.
-2. **Stage**: share the window you’ll demo, add a camera bubble, draw **Stage Marks** (say their names).
-3. **Console**: pops out a floating console. Say **“Action”**.
-4. **Dailies**: review the cut, the outtakes lane, transcript, chapters, redaction boxes.
-5. **Wrap**: final MP4, `.srt`, YouTube chapters, submission markdown, social post, blooper reel.
+1. **Green room**: pick a mic and watch the bars move. Try a few commands; nothing is recorded.
+2. **Stage**: choose the window you’ll demo, optionally a camera bubble, and draw **Stage Marks** (“terminal”, “preview”) you can zoom into by name.
+3. **The pill**: the main window steps aside and a small capsule sits at the bottom of your screen, like Flow’s. Hover it for the controls: mic, record/stop, cut, hold, timecode, command.
+4. **Dailies**: review the cut, the splices, the outtakes, and an on-device transcript.
+5. **Wrap**: final MP4 plus `.srt`, YouTube chapters, a submission post, a social post and a blooper reel.
 
-## Voice grammar
+### It never listens on its own
 
-| Say | What happens |
+Take1 only interprets speech after you ask it to: press the command shortcut or click the pill. It listens until you stop talking (or press Esc), acts, and goes quiet. Your narration is recorded but never treated as a command.
+
+### Shortcuts (global in the desktop app, editable in Settings)
+
+| Shortcut | Does |
 | --- | --- |
-| Action · Rolling · We’re live | Start rolling, resume from Hold, or punch in early during pre-roll |
-| Cut · Retake · Cut that | Rewind to the start of the sentence, pre-roll, punch in. Say it again during pre-roll to go back one more line |
-| Cut back ten · Back five | Rewind N seconds |
-| Scratch that · Undo · Keep it | Undo the last command, or cancel a Cut during pre-roll |
-| Hold · Hold tape | Compress dead air 8× until you say Action |
-| Zoom terminal · Focus preview | Ease into a Stage Mark |
-| Wide · Pull out | Back to full frame |
-| Redact that · Blur that | Blur the last 5 s on export (adjust the box in Dailies) |
-| Mark it, live demo · Chapter … | Drop a named chapter |
-| Camera on / off | Toggle the camera bubble |
-| That’s a wrap · Wrap it | Stop and open Dailies |
+| `Ctrl+Alt+Space` | Give a voice command |
+| `Ctrl+Alt+R` | Record / stop (the manual switch) |
+| `Ctrl+Alt+C` | Cut: redo the last sentence |
+| `Ctrl+Alt+H` | Hold / resume |
+| `Ctrl+Alt+M` | Mute / unmute the mic |
+| `Ctrl+Alt+T` | Show / hide the pill |
+| `Esc` | Cancel a command while listening |
 
-Commands only fire when spoken on their own, after a short pause, so “a short cut” in narration never triggers. Strict mode requires “Take one, …”. Keyboard backup in the console: `Alt+A` action, `Alt+C` cut, `Alt+H` hold, `Alt+Z` scratch, `Alt+W` wrap.
+### Say it your way
+
+| Intent | Examples that work |
+| --- | --- |
+| Action | “action”, “we’re live”, “keep going”, “resume” |
+| Cut | “cut”, “redo that line”, “I messed up”, “one more time”, “go back” |
+| Back N seconds | “go back ten seconds”, “rewind five” |
+| Hold | “hold”, “speed this up”, “waiting for the build”, “pause” |
+| Zoom / Wide | “zoom in on the terminal”, “focus preview” / “zoom out”, “full screen” |
+| Redact | “redact that”, “blur that”, “that was my API key” |
+| Chapter | “mark it, live demo”, “new chapter: setup” |
+| Scratch that | “never mind”, “undo”, “cancel” (during a replay it cancels the Cut) |
+| Camera / Mic | “camera off”, “mute the mic”, “unmute” |
+| Wrap | “that’s a wrap”, “we’re done”, “stop recording” |
+
+Commands are understood in three layers: phonetic repair of common mishearings (“rap” → wrap, “cot” → cut, “hole” → hold), a weighted phrase lexicon with entity extraction (seconds, mark names, chapter titles), and local sentence embeddings (MiniLM) for paraphrases. If it isn’t sure, the pill asks “did you mean” with one-click options.
 
 ## How the hard parts work
 
-**The tape is an edit list, not a file.** Video is encoded live with WebCodecs into chunks on an output timeline; audio is raw PCM placed sample-accurately using the AudioContext clock. A Cut truncates both at the splice point and moves what was removed into an outtake. Nothing is re-encoded until export, and only if there are redactions to burn in.
+**The tape is an edit list.** Video is encoded live with WebCodecs into chunks on an output timeline; audio is PCM placed sample-accurately using the AudioContext clock. A Cut truncates both and moves what was removed into an outtake. Nothing is re-encoded until export, and only when redactions must be burned in.
 
-**Keyframe alignment at splices.** Ending a run at any frame is safe, because earlier frames never depend on later ones. Starting one is not, so the first frame after every punch-in is a forced keyframe (`encode(frame, { keyFrame: true })`). A keyframe is also forced every second, so outtakes can be decoded from a nearby GOP (the outtake keeps that GOP prefix).
+**Keyframes at splices.** The first frame after every punch-in is a forced keyframe, so the new take never references thrown-away frames. The same applies after Hold trims a spoken command. A keyframe every second lets outtakes and replays decode from a nearby GOP.
 
-**Finding the sentence start.** Speech recognition reports words late. A 10 ms RMS envelope with an adaptive noise floor walks back from the first recognized word to the first loud frame after ≥250 ms of quiet. The splice then lands on the quietest 10 ms nearby, and audio splices get 10 ms fades (more reliable than zero-crossing search).
+**Finding the sentence start without live transcription.** The audio tape is scanned backwards in 10 ms windows against an adaptive noise floor: skip the pause before you pressed the shortcut, walk back through your last sentence, stop at a ≥380 ms gap. The splice lands on the quietest 10 ms nearby. Saying “cut” again during the replay goes back one more sentence.
 
-**Spoken commands never reach the final audio.** “Cut” falls inside the discarded region anyway. Non-destructive commands (Zoom, Hold, Mark, Redact, Camera) are muted retroactively: their onset-to-recognition range is stored and silenced with 10 ms fades at export. Because the audio tape is retroactive, this needs no live delay buffer.
+**The 5-second replay is the real tape.** During the rewind, the last five seconds are decoded from the tape and played back in sync with the audio, with the countdown in the final three seconds. The final frame is overlaid on your live screen with a match meter, so you can line your window back up before the punch-in.
 
-**Rolling back the tape doesn’t roll back your screen.** During pre-roll the frame where the tape left off is shown as an onion skin over your live window, with a **Match meter** comparing the two (64×36 grayscale signature). The zoom that was on screen at the splice point is restored automatically.
+**Spoken commands never reach the final audio.** Because command mode has a known start, the exact span from shortcut to action is muted retroactively (10 ms fades). For Hold, that span is trimmed off the tape entirely, so there is no dead air.
 
-**The floating console stays out of shot.** Capture defaults to a single window (`displaySurface: 'window'`, `selfBrowserSurface: 'exclude'`), which never includes other windows on top. If you pick a whole monitor, Stage warns you and the console collapses to a small dot while rolling.
+**The pill stays out of the video.** In the desktop app the pill is a transparent, always-on-top, non-focusable window with content protection, which excludes it from screen capture even when you record the whole screen. In the browser it’s a Picture-in-Picture window, so capture a single window.
 
-**Recording keeps going in a background tab.** Chrome throttles timers and stops `requestAnimationFrame` in hidden tabs. Frames are pulled with `MediaStreamTrackProcessor` and the frame clock runs in a Web Worker, which isn’t throttled.
+**Recording doesn’t stall in the background.** The desktop app disables background throttling. The browser build pulls frames with `MediaStreamTrackProcessor` and runs its frame clock in a Web Worker.
 
-**Zero-dependency MP4.** `src/engine/mp4.ts` writes ISO BMFF directly (H.264 or VP9 video, AAC or Opus audio, faststart). The only runtime dependency is React.
+**Zero-dependency MP4.** `src/engine/mp4.ts` writes ISO BMFF directly (H.264 or VP9, AAC or Opus, faststart).
 
 ## Project structure
 
 ```
-src/
-  engine/     director (state machine), audio, compositor, videoTape, snapshots, ticker, exporter, mp4
-  voice/      recognizer (Web Speech), grammar
-  features/   packet (SRT, chapters, markdown, social post)
-  screens/    GreenRoom, Stage, Console, Dailies, Wrap
-  ui/         tokens.css, app.css, components, Hud, sounds
-  lib/        store, time
+electron/       main.cjs (hotkeys, pill window, source picker), preload.cjs
+src/engine/     director (state machine), audio (+ VAD), compositor, videoTape, replay, snapshots, exporter, mp4, ticker
+src/voice/      intent (semantic matching), stt + stt.worker (local Whisper + MiniLM), recognizer (browser fallback)
+src/ui/         Pill, components (glyphs, bars, replay), tokens.css, app.css, sounds
+src/screens/    GreenRoom, Stage, Console, Dailies, Wrap
 ```
+
+## Design
+
+The interface follows Wispr Flow’s design language: lemon-cream canvas `#ffffeb`, ink `#1a1a1a`, EB Garamond display over Figtree, a lavender primary action, fathom green as the one dark panel, and glow orange as the signal colour. Take1 adds one brick-red tally light that only appears while tape is rolling. Every action has its own animated glyph in the same line style: reels spin back for Cut, chevrons run for Hold, brackets close for Zoom, a bar wipes for Redact, a ribbon drops for Chapter, the clapper closes for Wrap.
 
 ## Known limits
 
-- Speech recognition uses the browser’s Web Speech API, which streams audio to the browser vendor’s service.
-- Recording is kept in memory (about 300 MB per 10 minutes at 1080p). Long sessions are a v2 job for OPFS.
-- Outtakes can be played and exported as a blooper reel, but not yet swapped back into the cut.
+- Recordings are held in memory (about 300 MB per 10 minutes at 1080p).
+- Outtakes can be watched and exported as a blooper reel, but not yet swapped back into the cut.
+- Global shortcuts toggle listening (press, speak, it ends on silence). Hold-to-talk would need a native keyboard hook.

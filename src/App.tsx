@@ -1,9 +1,10 @@
 import { useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { director } from './engine/director';
-import { store, useStore, type Screen } from './lib/store';
-import { Wordmark } from './ui/components';
-import { Hud } from './ui/Hud';
+import { director, keyHandler } from './engine/director';
+import { native } from './lib/native';
+import { useStore, store, type Screen } from './lib/store';
+import { Keys, Wordmark } from './ui/components';
+import { Pill } from './ui/Pill';
 import { GreenRoom } from './screens/GreenRoom';
 import { Stage } from './screens/Stage';
 import { Console } from './screens/Console';
@@ -18,27 +19,25 @@ const STEPS: { key: Screen; label: string }[] = [
   { key: 'wrap', label: 'Wrap' },
 ];
 
-const KEYS: Record<string, string> = { a: 'action', c: 'cut', h: 'hold', z: 'scratch that', w: 'that’s a wrap', r: 'redact that' };
-
 export function App() {
   const screen = useStore((s) => s.screen);
-  const hudOpen = useStore((s) => s.hudOpen);
+  const pillOpen = useStore((s) => s.pillOpen);
   const toast = useStore((s) => s.toast);
   const phase = useStore((s) => s.phase);
+  const accel = useStore((s) => s.shortcuts.command);
+  const hasScreen = useStore((s) => s.hasScreen);
+  const micOn = useStore((s) => s.micOn);
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (!e.altKey || !KEYS[e.key.toLowerCase()]) return;
-      if (store.get().screen !== 'console') return;
-      e.preventDefault();
-      director.say(KEYS[e.key.toLowerCase()]);
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    window.addEventListener('keydown', keyHandler);
+    // desktop: the pill is the app's front door, so it's there from the start
+    if (native) setTimeout(() => director.openPill(), 400);
+    return () => window.removeEventListener('keydown', keyHandler);
   }, []);
 
   const idx = STEPS.findIndex((s) => s.key === screen);
   const recording = phase !== 'idle' && phase !== 'wrapped';
+  const canGo = (k: Screen) => (k === 'greenroom' ? !recording : k === 'stage' ? micOn && !recording : k === 'console' ? hasScreen : false);
 
   return (
     <div className={`app scr-${screen}`}>
@@ -47,12 +46,21 @@ export function App() {
         <ol className="steps">
           {STEPS.map((s, i) => (
             <li key={s.key} className={i === idx ? 'now' : i < idx ? 'past' : ''}>
-              <span>{i + 1}</span>
-              {s.label}
+              <button disabled={i === idx || !canGo(s.key)} onClick={() => store.set({ screen: s.key })}>
+                {s.label}
+              </button>
             </li>
           ))}
         </ol>
-        <span className={`rec-pill ${recording ? 'live' : ''}`}>{recording ? 'REC' : 'STANDBY'}</span>
+        <div className="nav-right">
+          <span className="nav-hint">
+            Command <Keys accel={accel} />
+          </span>
+          <span className={`status ${recording ? 'live' : ''}`}>
+            <span className={`dot dot-${phase}`} />
+            {recording ? 'Recording' : 'Standby'}
+          </span>
+        </div>
       </nav>
       {screen === 'greenroom' && <GreenRoom />}
       {screen === 'stage' && <Stage />}
@@ -60,11 +68,11 @@ export function App() {
       {screen === 'dailies' && <Dailies />}
       {screen === 'wrap' && <Wrap />}
       {toast && (
-        <div className={`toast toast-${toast.tone}`} key={toast.id}>
+        <div className={`toast t-${toast.tone}`} key={toast.id}>
           {toast.text}
         </div>
       )}
-      {hudOpen && director.hudRoot && createPortal(<Hud />, director.hudRoot)}
+      {pillOpen && director.pillRoot && createPortal(<Pill docked={!native && !(window as any).__pillFloat} />, director.pillRoot)}
     </div>
   );
 }
