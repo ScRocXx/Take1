@@ -1,96 +1,104 @@
 import { useEffect, useRef, useState } from 'react';
 import { director } from '../engine/director';
+import { native, type NativeSource } from '../lib/native';
 import { store, useStore, type Rect } from '../lib/store';
-import { Button, Icon, LivePreview } from '../ui/components';
+import { Button, Icon, Keys, LivePreview } from '../ui/components';
 
 export function Stage() {
   const hasScreen = useStore((s) => s.hasScreen);
   const surface = useStore((s) => s.surface);
+  const sourceName = useStore((s) => s.sourceName);
   const hasCamera = useStore((s) => s.hasCamera);
   const marks = useStore((s) => s.marks);
   const active = useStore((s) => s.activeMark);
+  const picking = useStore((s) => s.pickingSource);
+  const accel = useStore((s) => s.shortcuts);
   const [editing, setEditing] = useState<{ url: string; aspect: number } | null>(null);
 
   const share = async () => {
     try {
       await director.shareScreen();
     } catch {
-      /* user cancelled */
+      /* cancelled */
     }
   };
 
   const openConsole = async () => {
     director.zoomTo(null, false);
-    await director.openHud();
+    await director.openPill();
     store.set({ screen: 'console', phase: 'idle' });
+    if (native) native.hideMain();
   };
 
   return (
     <main className="stage-screen">
       <section className="stage-main">
         <header className="screen-head">
-          <p className="eyebrow">Set the stage</p>
+          <p className="overline">Set the stage</p>
           <h1>
             Pick your <em>shot.</em>
           </h1>
         </header>
-        <div className="stage-frame">
+        <div className="monitor">
           {hasScreen ? (
-            <LivePreview className="stage-preview" />
+            <LivePreview />
           ) : (
-            <button className="stage-empty" onClick={share}>
-              <span className="se-icon">{Icon.screen}</span>
-              <strong>Share the window you’ll demo</strong>
-              <span>A single window keeps the floating console out of your video.</span>
+            <button className="monitor-empty" onClick={share}>
+              <span className="me-icon">{Icon.screen}</span>
+              <strong>Choose the window you’ll demo</strong>
+              <span>A single window keeps notifications and other apps out of your video.</span>
             </button>
           )}
           {editing && <MarkEditor image={editing} onClose={() => setEditing(null)} />}
         </div>
-        {surface === 'monitor' && (
-          <div className="banner banner-cue">
-            <strong>You’re capturing your whole screen.</strong> The floating console will be in shot. Share a single window instead, or drag
-            the console to a second display. While rolling it shrinks to a small dot either way.
+        {surface === 'monitor' && !native && (
+          <div className="note note-warn">
+            You’re capturing a whole screen, so the floating pill will be in shot. Pick a single window, or use the desktop app, which hides the pill
+            from recordings.
             <Button kind="quiet" onClick={share}>
-              Switch to a window
+              Pick a window
             </Button>
           </div>
         )}
       </section>
 
-      <aside className="stage-side">
+      <aside className="side">
         <div className="card">
           <h3>Sources</h3>
-          <div className="source-row">
-            <span>{Icon.screen} Window</span>
-            <Button kind="quiet" onClick={share}>
-              {hasScreen ? 'Change' : 'Share'}
+          <div className="src-row">
+            <span>{Icon.screen}</span>
+            <div>
+              <strong>Window</strong>
+              <small>{hasScreen ? sourceName || 'Shared' : 'Not chosen'}</small>
+            </div>
+            <Button kind="ghost" onClick={share}>
+              {hasScreen ? 'Change' : 'Choose'}
             </Button>
           </div>
-          <div className="source-row">
-            <span>{Icon.camera} Camera bubble</span>
-            <Button kind="quiet" onClick={() => director.toggleCamera()}>
+          <div className="src-row">
+            <span>{Icon.camera}</span>
+            <div>
+              <strong>Camera bubble</strong>
+              <small>{hasCamera ? 'Bottom-right corner' : 'Off'}</small>
+            </div>
+            <Button kind="ghost" onClick={() => director.toggleCamera()}>
               {hasCamera ? 'Turn off' : 'Turn on'}
             </Button>
-          </div>
-          <div className="source-row">
-            <span>{Icon.mic} Microphone</span>
-            <span className="ok-text">On</span>
           </div>
         </div>
 
         <div className="card">
           <h3>Stage marks</h3>
-          <p className="fine">Name the parts of your window you’ll want to zoom into. During the take, say “Zoom {marks[0]?.name.toLowerCase() || 'terminal'}”.</p>
+          <p className="muted small">Name parts of the window you’ll zoom into. During the take, say “zoom {marks[0]?.name.toLowerCase() || 'terminal'}”.</p>
           <div className="marks">
             {marks.map((m) => (
-              <span key={m.id} className={`mark-chip ${active === m.id ? 'active' : ''}`}>
+              <span key={m.id} className={`mark ${active === m.id ? 'active' : ''}`}>
                 <button onClick={() => director.zoomTo(active === m.id ? null : m, false)}>{m.name}</button>
                 <button className="x" onClick={() => director.removeMark(m.id)} aria-label={`Remove ${m.name}`}>
                   {Icon.x}
                 </button>
               </span>
             ))}
-            {!marks.length && <span className="fine">No marks yet.</span>}
           </div>
           <Button
             kind="ghost"
@@ -105,15 +113,63 @@ export function Stage() {
           </Button>
         </div>
 
-        <div className="card call-card">
-          <h3>Ready?</h3>
-          <p className="fine">The console pops out and floats above your window. Then just say “Action”.</p>
+        <div className="card card-fathom">
+          <h3>Ready</h3>
+          <p>
+            The pill floats at the bottom of your screen{native ? ' and stays out of the recording' : ''}. Press <Keys accel={accel.record} dark /> or
+            say “action” to roll.
+          </p>
           <Button kind="primary" disabled={!hasScreen} onClick={openConsole}>
-            Open the console
+            {native ? 'Go to the pill' : 'Open the console'}
           </Button>
         </div>
       </aside>
+      {picking && <SourcePicker />}
     </main>
+  );
+}
+
+function SourcePicker() {
+  const [list, setList] = useState<NativeSource[] | null>(null);
+  const [tab, setTab] = useState<'window' | 'screen'>('window');
+  useEffect(() => {
+    native?.getSources().then(setList);
+  }, []);
+  const close = () => store.set({ pickingSource: false });
+  const shown = (list ?? []).filter((s) => s.kind === tab);
+  return (
+    <div className="modal" onClick={close}>
+      <div className="modal-card picker" onClick={(e) => e.stopPropagation()}>
+        <header>
+          <h2>What are you demoing?</h2>
+          <div className="seg">
+            <button className={tab === 'window' ? 'on' : ''} onClick={() => setTab('window')}>
+              Windows
+            </button>
+            <button className={tab === 'screen' ? 'on' : ''} onClick={() => setTab('screen')}>
+              Screens
+            </button>
+          </div>
+        </header>
+        <div className="picker-grid">
+          {list === null && <p className="muted">Looking for windows…</p>}
+          {shown.map((s) => (
+            <button key={s.id} className="src-tile" onClick={() => director.useSource(s.id, s.name)}>
+              <img src={s.thumbnail} alt="" />
+              <span>
+                {s.icon && <img className="ico" src={s.icon} alt="" />}
+                {s.name}
+              </span>
+            </button>
+          ))}
+        </div>
+        <footer>
+          <Button kind="quiet" onClick={close}>
+            Cancel
+          </Button>
+        </footer>
+      </div>
+    </div>
   );
 }
 
@@ -122,15 +178,6 @@ function MarkEditor({ image, onClose }: { image: { url: string; aspect: number }
   const [rect, setRect] = useState<Rect | null>(null);
   const [drag, setDrag] = useState<{ x: number; y: number } | null>(null);
   const [name, setName] = useState('');
-  const naming = useStore((s) => s.namingMark);
-
-  useEffect(() => {
-    director.onName = (n) => setName(n.replace(/^(call it|name it|this is( the)?)\s+/i, ''));
-    return () => {
-      director.onName = null;
-      store.set({ namingMark: false });
-    };
-  }, []);
 
   const pos = (e: React.PointerEvent) => {
     const r = box.current!.getBoundingClientRect();
@@ -147,7 +194,7 @@ function MarkEditor({ image, onClose }: { image: { url: string; aspect: number }
     <div className="mark-editor">
       <div
         ref={box}
-        className="me-canvas"
+        className="draw"
         style={{ aspectRatio: String(image.aspect) }}
         onPointerDown={(e) => {
           (e.target as HTMLElement).setPointerCapture(e.pointerId);
@@ -160,25 +207,14 @@ function MarkEditor({ image, onClose }: { image: { url: string; aspect: number }
           const p = pos(e);
           setRect({ x: Math.min(drag.x, p.x), y: Math.min(drag.y, p.y), w: Math.abs(p.x - drag.x), h: Math.abs(p.y - drag.y) });
         }}
-        onPointerUp={() => {
-          setDrag(null);
-          if (rect && rect.w > 0.02 && rect.h > 0.02) store.set({ namingMark: true });
-        }}
+        onPointerUp={() => setDrag(null)}
       >
         <img src={image.url} alt="" draggable={false} />
-        {rect && (
-          <div className="me-rect" style={{ left: `${rect.x * 100}%`, top: `${rect.y * 100}%`, width: `${rect.w * 100}%`, height: `${rect.h * 100}%` }} />
-        )}
-        {!rect && <span className="me-hint">Drag a box around the area to zoom into</span>}
+        {rect && <div className="draw-rect" style={{ left: `${rect.x * 100}%`, top: `${rect.y * 100}%`, width: `${rect.w * 100}%`, height: `${rect.h * 100}%` }} />}
+        {!rect && <span className="draw-hint">Drag a box around the area to zoom into</span>}
       </div>
-      <div className="me-bar">
-        <input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder={naming ? 'Say its name… e.g. “terminal”' : 'Name this mark'}
-          className={naming && !name ? 'listening' : ''}
-          autoFocus
-        />
+      <div className="draw-bar">
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Name it, e.g. terminal" autoFocus onKeyDown={(e) => e.key === 'Enter' && save()} />
         <Button kind="quiet" onClick={onClose}>
           Cancel
         </Button>
