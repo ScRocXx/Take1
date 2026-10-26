@@ -84,6 +84,21 @@ export const sounds = {
   tick() {
     sounds.blip(660);
   },
+  /** Start-of-listening ping, like Flow's. */
+  ping() {
+    if (!ctx || !enabled) return;
+    const t = ctx.currentTime;
+    const o = ctx.createOscillator();
+    const g = out(0);
+    o.type = 'sine';
+    o.frequency.setValueAtTime(1046.5, t);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.06, t + 0.008);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
+    o.connect(g);
+    o.start(t);
+    o.stop(t + 0.24);
+  },
   chime() {
     if (!ctx || !enabled) return;
     const t = ctx.currentTime;
