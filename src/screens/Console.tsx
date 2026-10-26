@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { director } from '../engine/director';
 import { native } from '../lib/native';
-import { useStore, DEFAULT_SHORTCUTS, TALK_KEYS } from '../lib/store';
+import { store, useStore, DEFAULT_SHORTCUTS, TALK_KEYS } from '../lib/store';
 import { clock } from '../lib/time';
 import { CALL_SHEET } from '../voice/intent';
 import { Button, Glyph, Icon, Keys, LivePreview, MatchMeter, ReplayView, Timecode, Toggle, holdToTalk, phaseLabel } from '../ui/components';
@@ -133,6 +133,30 @@ export function Console() {
       </section>
 
       <aside className="side">
+        <div className="card card-fathom howto">
+          <h3>How to direct</h3>
+          <ol>
+            <li>
+              <strong>Record</strong> and talk through your demo.
+            </li>
+            <li>
+              Fluffed a line? Hold <Keys accel={s.talkKey} dark />, say <q>cut</q>, let go.
+            </li>
+            <li>Listen to the 5-second replay, then pick up the sentence after 3, 2, 1.</li>
+            <li>
+              Finished? Press <strong>Stop</strong> or hold the keys and say <q>that’s a wrap</q>.
+            </li>
+          </ol>
+          <button className="link-btn" onClick={() => store.set({ helpOpen: true })}>
+            Full guide
+          </button>
+        </div>
+        {!native && (
+          <div className="note note-warn small">
+            <strong>Browser mode.</strong> Keys only work while this tab or the floating pill is focused. While you present another window, press and hold
+            the pill’s voice button instead. For keys that work everywhere, use the desktop app: <code>npm run app</code>
+          </div>
+        )}
         <div className="card">
           <h3>Say it your way</h3>
           <ul className="callsheet">

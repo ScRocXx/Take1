@@ -19,6 +19,30 @@ export function useFrame(ref: React.RefObject<Element>, fn: (now: number) => voi
   }, [ref]);
 }
 
+/** Press-and-hold behaviour for any voice button: listening only while held. */
+export const holdToTalk = {
+  onPointerDown: (e: React.PointerEvent<HTMLElement>) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      /* ignore */
+    }
+    director.commandDown();
+  },
+  onPointerUp: (e: React.PointerEvent<HTMLElement>) => {
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {
+      /* ignore */
+    }
+    director.commandUp();
+  },
+  onPointerCancel: () => director.cancelCommand(),
+  onContextMenu: (e: React.MouseEvent) => e.preventDefault(),
+};
+
 export function Wordmark({ size = 'md' }: { size?: 'sm' | 'md' | 'lg' }) {
   return (
     <span className={`wordmark wm-${size}`} aria-label="Take1">
@@ -49,7 +73,7 @@ export const phaseLabel: Record<Phase, string> = {
 };
 
 export function Keys({ accel, dark }: { accel: string; dark?: boolean }) {
-  const parts = accel.split('+').map((p) => (p === 'Ctrl' || p === 'Control' ? 'Ctrl' : p === 'Space' ? 'Space' : p));
+  const parts = accel.split('+').map((p) => (p === 'Control' ? 'Ctrl' : p === 'RightCtrl' ? 'Right Ctrl' : p === 'Super' ? 'Win' : p));
   return (
     <span className={`keys ${dark ? 'keys-dark' : ''}`}>
       {parts.map((p, i) => (
@@ -231,7 +255,7 @@ export function LivePreview({ className = '', onion }: { className?: string; oni
     }
   });
   return (
-    <div className={`live-preview ${className}`} style={{ aspectRatio: `${director.comp.W} / ${director.comp.H}` }}>
+    <div className={`live-preview ${className}`} style={{ aspectRatio: `${director.comp.W} / ${director.comp.H}`, ['--ar' as any]: director.comp.W / director.comp.H }}>
       <canvas ref={ref} />
     </div>
   );
@@ -439,29 +463,3 @@ export const Icon = {
     </svg>
   ),
 };
-
-export const holdToTalk = {
-  onPointerDown: (e: React.PointerEvent) => {
-    e.preventDefault();
-    try {
-      (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
-    } catch {
-      /* ignore */
-    }
-    director.startCommand();
-  },
-  onPointerUp: (e: React.PointerEvent) => {
-    e.preventDefault();
-    try {
-      (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
-    } catch {
-      /* ignore */
-    }
-    director.finishCommandSession();
-  },
-  onPointerCancel: () => {
-    director.cancelCommand();
-  },
-  onContextMenu: (e: React.MouseEvent) => e.preventDefault(),
-};
-

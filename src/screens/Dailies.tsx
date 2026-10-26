@@ -11,6 +11,7 @@ export function Dailies() {
   const outtakes = useStore((s) => s.outtakes);
   const transcript = useStore((s) => s.transcript);
   const transcribing = useStore((s) => s.transcribing);
+  const captions = useStore((s) => s.captions);
   const [url, setUrl] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [t, setT] = useState(0);
@@ -26,7 +27,6 @@ export function Dailies() {
       .previewMp4()
       .then(setUrl)
       .catch((e) => setErr(String(e)));
-    director.transcribe();
   }, []);
 
   const seek = (s: number) => {
@@ -57,13 +57,17 @@ export function Dailies() {
     <main className="dailies">
       <header className="screen-head row-head">
         <div>
-          <p className="overline">Dailies</p>
+          <p className="overline">Review</p>
           <h1>
             Here’s your <em>take.</em>
           </h1>
+          <p className="muted explain">
+            This is the finished video, with every retake already spliced in. The strip under the player shows where things happened:
+            orange ticks are splices, green bands are waits you held, lavender stripes will be blurred. Your fluffed lines are kept below as outtakes.
+          </p>
         </div>
         <Button kind="primary" onClick={() => store.set({ screen: 'wrap' })}>
-          Print it
+          Export
         </Button>
       </header>
 
@@ -74,7 +78,7 @@ export function Dailies() {
         </div>
         <div>
           <strong>{outtakes.length}</strong>
-          <span>lines retaken live</span>
+          <span>{outtakes.length === 1 ? 'line' : 'lines'} retaken live</span>
         </div>
         <div>
           <strong>{Math.round(saved)} s</strong>
@@ -132,7 +136,7 @@ export function Dailies() {
 
           <section className="outtakes">
             <h3>Outtakes</h3>
-            <p className="muted small">Every line you retook. None of it is in the cut.</p>
+            <p className="muted small">Every line you retook with “cut”. None of it is in the video. Click one to watch it.</p>
             {outtakes.length ? (
               <div className="ot-lane">
                 {outtakes.map((o) => (
@@ -158,14 +162,36 @@ export function Dailies() {
           <div className="card">
             <h3>Transcript</h3>
             <div className="transcript">
-              {transcribing && <p className="muted small">Transcribing on your device…</p>}
+              {!transcript && !transcribing && (
+                <div className="tr-empty">
+                  <p className="muted small">Transcribe the take on your device to get a clickable transcript and captions.</p>
+                  <Button kind="ink" onClick={() => director.transcribe()}>
+                    Transcribe
+                  </Button>
+                </div>
+              )}
+              {transcribing && (
+                <div className="cap-progress">
+                  <div className="engine-bar wide">
+                    <i style={{ transform: `scaleX(${captions.status === 'downloading' ? captions.progress : 1})` }} className={captions.status === 'transcribing' ? 'indeterminate' : ''} />
+                  </div>
+                  <p className="muted small">{captions.status === 'downloading' ? `Downloading the caption model · ${Math.round(captions.progress * 100)}% (first time only)` : 'Listening back to your take…'}</p>
+                </div>
+              )}
               {transcript?.map((l, i) => (
                 <button key={i} className={t >= l.start && t < l.end ? 'now' : ''} onClick={() => seek(l.start)}>
                   <time>{clock(l.start)}</time>
                   {l.text}
                 </button>
               ))}
-              {transcript && !transcript.length && !transcribing && <p className="muted small">No narration found, or the voice engine isn’t available.</p>}
+              {captions.status === 'error' && !transcribing && (
+                <div className="tr-empty">
+                  <p className="muted small">{captions.detail ?? 'Transcription failed.'}</p>
+                  <Button kind="ghost" onClick={() => director.transcribe()}>
+                    Try again
+                  </Button>
+                </div>
+              )}
             </div>
           </div>
           <div className="card">

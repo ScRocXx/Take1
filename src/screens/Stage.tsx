@@ -34,7 +34,7 @@ export function Stage() {
     <main className="stage-screen">
       <section className="stage-main">
         <header className="screen-head">
-          <p className="overline">Set the stage</p>
+          <p className="overline">Step 2 · Choose a window</p>
           <h1>
             Pick your <em>shot.</em>
           </h1>
@@ -88,7 +88,7 @@ export function Stage() {
         </div>
 
         <div className="card">
-          <h3>Stage marks</h3>
+          <h3>Zoom spots</h3>
           <p className="muted small">Name parts of the window you’ll zoom into. During the take, say “zoom {marks[0]?.name.toLowerCase() || 'terminal'}”.</p>
           <div className="marks">
             {marks.map((m) => (
@@ -116,8 +116,8 @@ export function Stage() {
         <div className="card card-fathom">
           <h3>Ready</h3>
           <p>
-            The pill floats at the bottom of your screen{native ? ' and stays out of the recording' : ''}. Press <Keys accel={accel.record} dark /> or
-            say “action” to roll.
+            Next you’ll see the recording console{native ? ' and the floating pill (hidden from the recording)' : ' and a small floating pill window'}. Press{' '}
+            <strong>Record</strong> (or <Keys accel={accel.record} dark />) to start.
           </p>
           <Button kind="primary" disabled={!hasScreen} onClick={openConsole}>
             {native ? 'Go to the pill' : 'Open the console'}

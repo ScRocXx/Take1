@@ -51,7 +51,7 @@ export function GreenRoom() {
   return (
     <main className="greenroom">
       <section className="gr-hero">
-        <p className="overline">Before the first take</p>
+        <p className="overline">Step 1 · Setup</p>
         <h1>
           Mess up <em>out loud.</em>
         </h1>
@@ -127,11 +127,12 @@ export function GreenRoom() {
         <article className={`step-card ${!micOn ? 'dim' : count >= 3 ? 'done' : 'current'}`}>
           <header>
             <span className="step-n">{count >= 3 ? Icon.check : '2'}</span>
-            <h2>Try a command</h2>
+            <h2>Try push-to-talk</h2>
             <span className="count">{count}/5</span>
           </header>
-          <p className="muted">
-            Hold <Keys accel={accel} /> {native ? 'in any app' : 'in this window'} (or hold the button), say one of these, then let go. Nothing is
+          <KeyMeter />
+          <p className="muted small">
+            {native ? 'Works in any app.' : 'In the browser the keys work while this window is focused.'} Or press and hold the button below. Nothing is
             recorded yet.
           </p>
           <div className="try-grid">
@@ -161,10 +162,41 @@ export function GreenRoom() {
 
         <div className="gr-cta">
           <Button kind="primary" onClick={() => store.set({ screen: 'stage', log: [], lastAction: null, listen: { state: 'off', heard: '', intent: null, alternatives: [], id: 0 } })} disabled={!micOn}>
-            Set the stage
+            Next: choose a window
           </Button>
         </div>
       </section>
     </main>
+  );
+}
+
+/** Shows the talk keys lighting up as you press them, and what Take1 is doing. */
+function KeyMeter() {
+  const accel = useStore((s) => s.talkKey);
+  const keys = useStore((s) => s.keysDown);
+  const listen = useStore((s) => s.listen.state);
+  const parts = accel === 'RightCtrl' ? ['Right Ctrl'] : accel.split('+');
+  const isDown = (p: string) =>
+    p === 'Ctrl' || p === 'Right Ctrl' ? keys.ctrl : p === 'Shift' ? keys.shift : p === 'Alt' ? keys.alt : p === 'Win' ? keys.meta : false;
+  const msg =
+    listen === 'listening'
+      ? 'Listening. Say a command, then let go.'
+      : listen === 'thinking'
+        ? 'Got it, working out what you meant…'
+        : parts.some(isDown)
+          ? 'Keep holding both…'
+          : 'Hold these keys together, speak, then let go.';
+  return (
+    <div className={`key-meter ${listen === 'listening' ? 'live' : ''}`}>
+      <div className="km-keys">
+        {parts.map((p, i) => (
+          <span key={p} className="km-wrap">
+            {i > 0 && <span className="km-plus">+</span>}
+            <kbd className={isDown(p) || listen === 'listening' ? 'down' : ''}>{p}</kbd>
+          </span>
+        ))}
+      </div>
+      <p>{msg}</p>
+    </div>
   );
 }
