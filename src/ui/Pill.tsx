@@ -3,7 +3,7 @@ import { director } from '../engine/director';
 import { native } from '../lib/native';
 import { useStore } from '../lib/store';
 import { INTENT_LABEL, type Command, type Intent } from '../voice/intent';
-import { Bars, Glyph, Icon, Keys, MatchMeter, ReplayView, Timecode } from './components';
+import { Bars, Glyph, Icon, Keys, MatchMeter, ReplayView, Timecode, holdToTalk } from './components';
 
 /**
  * The Flow-style capsule. Lives in a transparent, capture-proof window on the
@@ -22,7 +22,7 @@ export function Pill({ docked = false }: { docked?: boolean }) {
   const prompt = useStore((s) => s.teleprompter);
   const rewind = useStore((s) => s.rewind);
   const holdBadge = useStore((s) => s.holdBadge);
-  const accel = useStore((s) => s.shortcuts.command);
+  const accel = useStore((s) => s.talkKey);
   const marks = useStore((s) => s.marks);
   const [hover, setHover] = useState(false);
   const [burst, setBurst] = useState<typeof last>(null);
@@ -131,7 +131,7 @@ export function Pill({ docked = false }: { docked?: boolean }) {
               <Timecode className="cap-tc" />
               <span className="cap-take">TK {take}</span>
               <span className="cap-sep" />
-              <button className="cbtn voice" onClick={() => director.toggleCommand()} title="Give a command">
+              <button className="cbtn voice" {...holdToTalk} title="Hold to give a command">
                 {Icon.voice}
                 <Keys accel={accel} dark />
               </button>
@@ -154,7 +154,7 @@ export function Pill({ docked = false }: { docked?: boolean }) {
                 <>
                   <Bars count={16} live={listen.state === 'listening'} />
                   <span className="cap-label">{listen.state === 'thinking' ? 'Got it' : listen.state === 'unsure' ? 'Try again' : 'Listening'}</span>
-                  {listen.state === 'listening' && <kbd className="esc">Esc</kbd>}
+                  {listen.state === 'listening' && <span className="cap-hint">release to send</span>}
                 </>
               )}
             </div>

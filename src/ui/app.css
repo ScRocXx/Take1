@@ -499,3 +499,9 @@ html.pill-pip body { background: var(--canvas); }
   .steps { display: none; }
   .dock { flex-wrap: wrap; border-radius: var(--r-card); }
 }
+
+.cap-hint { font: 500 12px var(--sans); color: var(--on-capsule-2); white-space: nowrap; }
+.talk-pick { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0 4px; border-top: 1px solid var(--line); font-size: 14px; }
+.talk-pick small { display: block; color: var(--soft); font-size: 12px; }
+.talk-pick select { height: 36px; border-radius: var(--r-input); border: 1px solid var(--line-2); background: var(--white); padding: 0 8px; }
+.dock-voice, .cbtn.voice, .btn-ink { touch-action: none; user-select: none; }
