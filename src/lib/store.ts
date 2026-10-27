@@ -1,18 +1,19 @@
 import { useSyncExternalStore } from 'react';
 
-export type Phase = 'idle' | 'rolling' | 'rewinding' | 'preroll' | 'hold' | 'wrapped';
-export type Screen = 'greenroom' | 'stage' | 'console' | 'dailies' | 'wrap' | 'library';
+/** 'hold' is the sped-up state ("speed up 4×"); 'paused' records nothing until Play. */
+export type Phase = 'idle' | 'rolling' | 'paused' | 'rewinding' | 'preroll' | 'hold' | 'wrapped';
+export type Screen = 'welcome' | 'setup' | 'record' | 'review' | 'export' | 'library';
 export type Tone = 'rec' | 'cue' | 'hold' | 'redact' | 'ok' | 'muted';
 
 export interface Rect { x: number; y: number; w: number; h: number }
 
 export interface LogItem {
   id: number;
-  kind: string; // action kind (cut, hold, …) or 'heard' / 'system'
+  kind: string; // command kind (cut, hold, …)
   label: string;
   detail?: string;
   tone: Tone;
-  at: number; // tape seconds
+  at: number; // seconds on the output timeline
 }
 
 export interface StageMark { id: string; name: string; rect: Rect }
@@ -33,9 +34,12 @@ export interface RangeInfo {
   end: number;
   rect?: Rect;
   wall?: number;
+  factor?: number;
+  /** a blur that keeps going until "unblur" */
+  open?: boolean;
 }
 
-export interface ChapterInfo { id: string; t: number; name: string }
+export interface ChapterInfo { id: string; t: number; name: string; auto?: boolean }
 
 export type ListenState = 'off' | 'listening' | 'thinking' | 'done' | 'unsure';
 
@@ -45,6 +49,8 @@ export interface Settings {
   replaySeconds: number;
   countdown: number;
   pill: boolean;
+  /** default factor for "speed up" */
+  speed: number;
 }
 
 /** Hold-to-talk combos. Fn isn't offered: on Windows laptops the Fn key never reaches the OS. */
@@ -58,6 +64,7 @@ export const TALK_KEYS: { id: string; label: string; note: string }[] = [
 export const DEFAULT_SHORTCUTS: Record<string, string> = {
   record: 'Ctrl+Alt+R',
   cut: 'Ctrl+Alt+C',
+  pause: 'Ctrl+Alt+P',
   hold: 'Ctrl+Alt+H',
   mic: 'Ctrl+Alt+M',
   pill: 'Ctrl+Alt+T',
@@ -74,6 +81,7 @@ export interface TakeMeta {
   hasCaptions: boolean;
   captionsBurned: boolean;
   thumbUrl: string | null;
+  seen: boolean;
 }
 
 export interface CaptionState {
@@ -90,7 +98,14 @@ export interface AppState {
   captions: CaptionState;
   keysDown: { ctrl: boolean; shift: boolean; alt: boolean; meta: boolean };
   helpOpen: boolean;
+  /** first visit: show the push-to-talk practice in Setup */
+  onboarded: boolean;
+  practice: boolean;
   phase: Phase;
+  /** current speed-up factor while phase is 'hold' */
+  speed: number;
+  /** "blur that" / "zoom in" while rolling: the tape pauses and asks you to draw a box */
+  drawing: { kind: 'redact' | 'zoom'; image: string; aspect: number; at: number; name?: string } | null;
   scene: number;
   take: number;
   log: LogItem[];
@@ -98,7 +113,6 @@ export interface AppState {
   engine: { status: 'idle' | 'loading' | 'ready' | 'error'; progress: number; detail: string | null };
   micOn: boolean;
   micMuted: boolean;
-  micLevel: number;
   micDevices: { id: string; label: string }[];
   micDevice: string | null;
   hasScreen: boolean;
@@ -126,7 +140,7 @@ export interface AppState {
   pickingSource: boolean;
   trying: boolean;
   tried: Record<string, boolean>;
-  transcript: { start: number; end: number; text: string }[] | null;
+  transcript: { start: number; end: number; text: string; words?: { text: string; start: number; end: number }[] }[] | null;
   transcribing: boolean;
   shortcuts: Record<string, string>;
   talkKey: string;
@@ -134,15 +148,46 @@ export interface AppState {
   settings: Settings;
 }
 
+function readFlag(k: string) {
+  try {
+    return localStorage.getItem(k) === '1';
+  } catch {
+    return false;
+  }
+}
+
+export function setFlag(k: string) {
+  try {
+    localStorage.setItem(k, '1');
+  } catch {
+    /* private mode */
+  }
+}
+
+/** Settings, the talk key and shortcuts survive a reload (the desktop app also keeps shortcuts in its own config). */
+const PREFS = 'take1.prefs';
+function readPrefs(): Partial<Pick<AppState, 'settings' | 'talkKey' | 'shortcuts'>> {
+  try {
+    return JSON.parse(localStorage.getItem(PREFS) ?? '{}') ?? {};
+  } catch {
+    return {};
+  }
+}
+const saved = readPrefs();
+
 const initial: AppState = {
-  screen: 'greenroom',
+  screen: 'welcome',
   sessionId: '',
   title: '',
   library: [],
   captions: { status: 'idle', progress: 0, detail: null },
   keysDown: { ctrl: false, shift: false, alt: false, meta: false },
   helpOpen: false,
+  onboarded: readFlag('take1.onboarded'),
+  practice: !readFlag('take1.onboarded'),
   phase: 'idle',
+  speed: 4,
+  drawing: null,
   scene: 1,
   take: 1,
   log: [],
@@ -150,7 +195,6 @@ const initial: AppState = {
   engine: { status: 'idle', progress: 0, detail: null },
   micOn: false,
   micMuted: false,
-  micLevel: 0,
   micDevices: [],
   micDevice: null,
   hasScreen: false,
@@ -180,10 +224,10 @@ const initial: AppState = {
   tried: {},
   transcript: null,
   transcribing: false,
-  shortcuts: { ...DEFAULT_SHORTCUTS },
-  talkKey: 'Ctrl+Shift',
+  shortcuts: { ...DEFAULT_SHORTCUTS, ...saved.shortcuts },
+  talkKey: saved.talkKey ?? 'Ctrl+Shift',
   talkHook: true,
-  settings: { sounds: true, prerollAudio: true, replaySeconds: 5, countdown: 3, pill: true },
+  settings: { sounds: true, prerollAudio: true, replaySeconds: 5, countdown: 3, pill: true, speed: 4, ...saved.settings },
 };
 
 let state: AppState = initial;
@@ -194,6 +238,13 @@ export const store = {
   set(patch: Partial<AppState> | ((s: AppState) => Partial<AppState>)) {
     const p = typeof patch === 'function' ? patch(state) : patch;
     state = { ...state, ...p };
+    if ('settings' in p || 'talkKey' in p || 'shortcuts' in p) {
+      try {
+        localStorage.setItem(PREFS, JSON.stringify({ settings: state.settings, talkKey: state.talkKey, shortcuts: state.shortcuts }));
+      } catch {
+        /* private mode */
+      }
+    }
     listeners.forEach((l) => l());
   },
   subscribe(l: () => void) {
