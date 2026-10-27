@@ -1,8 +1,8 @@
 /**
- * Microphone capture + the audio "tape".
+ * Microphone capture + the recorded audio buffer.
  *
  * - An AudioWorklet taps raw PCM with the AudioContext clock time of every block,
- *   so audio can be placed on the tape sample-accurately (no MediaRecorder drift).
+ *   so audio can be placed on the output timeline sample-accurately (no MediaRecorder drift).
  * - A 10 ms RMS envelope (60 s ring) powers voice-activity detection: it finds where
  *   a sentence really started, because speech recognition reports words late.
  */
@@ -14,8 +14,8 @@ registerProcessor('take1-tap',Tap);`;
 
 export const SAMPLE_RATE = 48000;
 
-/** Growable mono PCM buffer addressed by sample index (= tape time × sample rate). */
-export class PcmTape {
+/** Growable mono PCM buffer addressed by sample index (= output time × sample rate). */
+export class PcmBuffer {
   private chunks: Float32Array[] = [];
   length = 0;
   constructor(readonly sr: number) {}
@@ -106,13 +106,23 @@ export class PcmTape {
       skipped++;
     }
     if (j < 0 || env[j] < thr) return null;
+    // Walk back through the speech collecting pauses. A breath inside a sentence is
+    // ~0.2–0.4 s; the gap between sentences is usually longer. Prefer the most recent
+    // long pause (≥ 0.7 s) if the sentence it starts is a plausible length (≤ 14 s),
+    // otherwise fall back to the first pause ≥ `gap`.
+    const speechEnd = j;
+    const longN = 70;
     let quiet = 0;
+    let firstShort: number | null = null;
     for (; j >= 0; j--) {
       if (env[j] < thr) {
         quiet++;
-        if (quiet >= gapN) return a + (j + quiet) * 0.01;
+        if (quiet === gapN && firstShort === null) firstShort = a + (j + quiet) * 0.01;
+        if (quiet >= longN) return a + (j + quiet) * 0.01;
+        if (speechEnd - j > 1400 && firstShort !== null) return firstShort;
       } else quiet = 0;
     }
+    if (firstShort !== null) return firstShort;
     // no pause anywhere: either the sentence started with the tape, or the room is noisy enough to
     // look like speech. Only trust the first case for a short tape; otherwise let the caller step back.
     return a === 0 && before < 6 ? 0 : null;
