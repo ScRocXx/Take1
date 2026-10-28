@@ -2,6 +2,9 @@
  * Minimal, dependency-free MP4 writer (ISO BMFF, "faststart": moov before mdat).
  * Video: H.264 (avcC from WebCodecs decoderConfig.description) or VP9 (vpcC).
  * Audio: AAC (esds) or Opus (dOps).
+ * Media is interleaved in ~0.5 s runs (audio and video side by side in the file),
+ * so players can stream it without seeking back and forth, and chapters are
+ * written as a Nero 'chpl' box, which VLC, mpv, ffmpeg and many players read.
  */
 
 export interface MuxSample {
@@ -44,6 +47,11 @@ class W {
   u32(v: number) {
     const b = new Uint8Array(4);
     new DataView(b.buffer).setUint32(0, v >>> 0);
+    return this.bytes(b);
+  }
+  u64(v: number) {
+    const b = new Uint8Array(8);
+    new DataView(b.buffer).setBigUint64(0, BigInt(Math.round(v)));
     return this.bytes(b);
   }
   i16(v: number) {
@@ -104,10 +112,15 @@ interface Track {
   durations: number[]; // in timescale units
   sizes: number[];
   keys: boolean[];
+  /** file offset of each chunk (a run of consecutive samples) */
   offsets: number[];
+  /** samples in each chunk */
+  perChunk: number[];
   entry: Uint8Array; // stsd sample entry
   width: number;
   height: number;
+  /** file passes 4 GB: 64-bit chunk offsets (co64) */
+  large?: boolean;
 }
 
 function stbl(t: Track) {
@@ -120,11 +133,19 @@ function stbl(t: Track) {
   }
   const stts = new W().u32(runs.length);
   runs.forEach(([c, d]) => stts.u32(c).u32(d));
-  const stsc = new W().u32(1).u32(1).u32(1).u32(1);
+  // stsc: run-length of "samples per chunk"
+  const sruns: [number, number][] = [];
+  t.perChunk.forEach((n, i) => {
+    if (!sruns.length || sruns[sruns.length - 1][1] !== n) sruns.push([i + 1, n]);
+  });
+  const stsc = new W().u32(sruns.length);
+  sruns.forEach(([first, n]) => stsc.u32(first).u32(n).u32(1));
   const stsz = new W().u32(0).u32(t.sizes.length);
   t.sizes.forEach((s) => stsz.u32(s));
+  // 32-bit chunk offsets unless the file passes 4 GB, then 64-bit (co64)
+  const big = !!t.large;
   const stco = new W().u32(t.offsets.length);
-  t.offsets.forEach((o) => stco.u32(o));
+  t.offsets.forEach((o) => (big ? stco.u64(o) : stco.u32(o)));
   const parts = [
     full('stsd', 0, 0, new W().u32(1).out(), t.entry),
     full('stts', 0, 0, stts.out()),
@@ -135,7 +156,7 @@ function stbl(t: Track) {
     keyIdx.forEach((i) => stss.u32(i));
     parts.push(full('stss', 0, 0, stss.out()));
   }
-  parts.push(full('stsc', 0, 0, stsc.out()), full('stsz', 0, 0, stsz.out()), full('stco', 0, 0, stco.out()));
+  parts.push(full('stsc', 0, 0, stsc.out()), full('stsz', 0, 0, stsz.out()), full(big ? 'co64' : 'stco', 0, 0, stco.out()));
   return box('stbl', ...parts);
 }
 
@@ -245,8 +266,27 @@ function audioEntry(a: MuxAudio) {
   return box('Opus', base, box('dOps', dops));
 }
 
+export interface MuxChapter {
+  t: number; // seconds
+  name: string;
+}
+
+/** Nero chapter list: moov/udta/chpl. Times in 100 ns units. */
+function chpl(chapters: MuxChapter[]) {
+  const list = chapters.slice(0, 255);
+  const w = new W().u32(0).u8(list.length);
+  for (const c of list) {
+    const ticks = BigInt(Math.max(0, Math.round(c.t * 1e7)));
+    const b = new Uint8Array(8);
+    new DataView(b.buffer).setBigUint64(0, ticks);
+    const title = enc.encode(c.name).slice(0, 255);
+    w.bytes(b).u8(title.length).bytes(title);
+  }
+  return box('udta', full('chpl', 1, 0, w.out()));
+}
+
 /** Build a complete MP4 file in memory. */
-export function muxMp4(video: MuxVideo | null, audio: MuxAudio | null): Blob {
+export function muxMp4(video: MuxVideo | null, audio: MuxAudio | null, chapters: MuxChapter[] = []): Blob {
   const MOVIE_TS = 1000;
   const tracks: Track[] = [];
   const payloads: Uint8Array[][] = [];
@@ -271,6 +311,7 @@ export function muxMp4(video: MuxVideo | null, audio: MuxAudio | null): Blob {
       sizes: s.map((x) => x.data.length),
       keys: s.map((x) => x.key),
       offsets: [],
+      perChunk: [],
       entry,
       width: video.width,
       height: video.height,
@@ -290,6 +331,7 @@ export function muxMp4(video: MuxVideo | null, audio: MuxAudio | null): Blob {
       sizes: s.map((x) => x.data.length),
       keys: s.map(() => true),
       offsets: [],
+      perChunk: [],
       entry: audioEntry(audio),
       width: 0,
       height: 0,
@@ -317,22 +359,57 @@ export function muxMp4(video: MuxVideo | null, audio: MuxAudio | null): Blob {
       .zeros(24)
       .u32(tracks.length + 1)
       .out();
-    return box('moov', full('mvhd', 0, 0, mvhd), ...tracks.map((t) => trak(t, movieDur)));
+    const extra = chapters.length ? [chpl(chapters)] : [];
+    return box('moov', full('mvhd', 0, 0, mvhd), ...tracks.map((t) => trak(t, movieDur)), ...extra);
   };
 
-  // pass 1: size the moov with placeholder offsets, pass 2: real offsets
-  tracks.forEach((t) => (t.offsets = t.sizes.map(() => 0)));
-  const moovSize = buildMoov().length;
-  let pos = ftyp.length + moovSize + 8;
-  tracks.forEach((t) => {
-    t.offsets = t.sizes.map((sz) => {
-      const o = pos;
-      pos += sz;
-      return o;
+  // Interleave: walk time in 0.5 s windows and emit each track's samples for that
+  // window as one chunk, so audio and video for the same moment sit together.
+  const starts = tracks.map((t) => {
+    let acc = 0;
+    return t.durations.map((d) => {
+      const s0 = acc / t.timescale;
+      acc += d;
+      return s0;
     });
   });
+  const order: { track: number; from: number; to: number }[] = [];
+  const cursor = tracks.map(() => 0);
+  const WINDOW = 0.5;
+  for (let w = WINDOW; cursor.some((c, i) => c < tracks[i].sizes.length); w += WINDOW) {
+    tracks.forEach((t, i) => {
+      let j = cursor[i];
+      while (j < t.sizes.length && starts[i][j] < w) j++;
+      if (j > cursor[i]) order.push({ track: i, from: cursor[i], to: j });
+      cursor[i] = j;
+    });
+  }
+  tracks.forEach((t, i) => (t.perChunk = order.filter((o) => o.track === i).map((o) => o.to - o.from)));
+
+  // Over 4 GB, offsets and the mdat size need 64 bits. Decide before laying out, so the
+  // index is the same size in both passes (with headroom for the index itself).
+  const payload = payloads.reduce((a, p) => a + p.reduce((b, d) => b + d.length, 0), 0);
+  const large = payload + 64 * 1024 * 1024 > 0xffffffff;
+  tracks.forEach((t) => (t.large = large));
+  const mdatHeaderSize = large ? 16 : 8;
+
+  // pass 1: size the moov with placeholder offsets, pass 2: real offsets
+  tracks.forEach((t) => (t.offsets = t.perChunk.map(() => 0)));
+  const moovSize = buildMoov().length;
+  let pos = ftyp.length + moovSize + mdatHeaderSize;
+  const body: Uint8Array[] = [];
+  tracks.forEach((t) => (t.offsets = []));
+  for (const o of order) {
+    tracks[o.track].offsets.push(pos);
+    for (let k = o.from; k < o.to; k++) {
+      const d = payloads[o.track][k];
+      body.push(d);
+      pos += d.length;
+    }
+  }
   const moov = buildMoov();
-  const mdatLen = 8 + payloads.flat().reduce((a, b) => a + b.length, 0);
-  const mdatHead = new W().u32(mdatLen).str('mdat').out();
-  return new Blob([ftyp, moov, mdatHead, ...payloads.flat()] as BlobPart[], { type: 'video/mp4' });
+  const mdatLen = mdatHeaderSize + payload;
+  // 64-bit form: size field 1, then the real size after the type
+  const mdatHead = large ? new W().u32(1).str('mdat').u64(mdatLen).out() : new W().u32(mdatLen).str('mdat').out();
+  return new Blob([ftyp, moov, mdatHead, ...body] as BlobPart[], { type: 'video/mp4' });
 }
