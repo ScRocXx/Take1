@@ -1,11 +1,11 @@
-import { decodeRun, type Chunk } from './videoTape';
+import { decodeRun, type Chunk } from './video';
 
 /**
- * The pre-roll replay: the real last few seconds of video, decoded from the tape
- * and downscaled, so you see (and hear) exactly where you'll pick up.
+ * The replay after a cut: the real last few seconds of video, decoded and
+ * downscaled, so you see (and hear) exactly where you'll pick up.
  */
 export interface ReplayFrame {
-  t: number; // tape seconds
+  t: number; // seconds on the output timeline
   bmp: ImageBitmap;
 }
 
@@ -36,7 +36,9 @@ export class Replay {
       const h = Math.round((f.displayHeight / f.displayWidth) * width);
       try {
         const bmp = await createImageBitmap(f, { resizeWidth: width, resizeHeight: h, resizeQuality: 'medium' });
-        r.frames.push({ t: f.timestamp / 1e6, bmp });
+        // disposed while this frame was being made: free it instead of keeping it
+        if (r.cancelled) bmp.close();
+        else r.frames.push({ t: f.timestamp / 1e6, bmp });
       } catch {
         /* skip */
       }

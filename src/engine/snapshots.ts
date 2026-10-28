@@ -1,31 +1,22 @@
 import type { Rect } from '../lib/store';
 
 export interface Snap {
-  t: number; // tape seconds
+  t: number; // seconds on the output timeline
   url: string;
   blob: Blob;
-  view: Rect; // compositor view at that moment, restored after a Cut
+  view: Rect; // zoom at that moment, restored after a Cut
 }
 
-/** Small JPEG frames every 0.5 s of tape: filmstrip, Match Frame, outtake thumbnails. */
+/** Small JPEG frames every 0.5 s: timeline strip, outtake thumbnails, the resume frame. */
 export class Snapshots {
   list: Snap[] = [];
   private gen = 0;
-  private small: HTMLCanvasElement;
 
-  constructor() {
-    this.small = document.createElement('canvas');
-  }
-
-  async capture(src: HTMLCanvasElement, t: number, view: Rect) {
+  /** `make` produces the thumbnail (the compositor worker does the drawing). */
+  async capture(make: () => Promise<Blob | null>, t: number, view: Rect) {
     const gen = this.gen;
-    const w = 480;
-    const h = Math.round((src.height / src.width) * w);
-    this.small.width = w;
-    this.small.height = h;
-    this.small.getContext('2d')!.drawImage(src, 0, 0, w, h);
-    const blob = await new Promise<Blob | null>((r) => this.small.toBlob(r, 'image/jpeg', 0.72));
-    if (!blob || gen !== this.gen) return; // a Cut happened while we were encoding
+    const blob = await make();
+    if (!blob || gen !== this.gen) return; // a cut happened while it was being made
     this.list.push({ t, blob, url: URL.createObjectURL(blob), view });
   }
 
@@ -46,4 +37,16 @@ export class Snapshots {
     this.list.push(...removed);
     this.list.sort((a, b) => a.t - b.t);
   }
+
+  /** Release every thumbnail (a new recording starts). */
+  dispose() {
+    this.gen++;
+    releaseSnaps(this.list);
+    this.list = [];
+  }
+}
+
+/** Free the object URLs of thumbnails nothing will show again. */
+export function releaseSnaps(list: Snap[]) {
+  for (const s of list) URL.revokeObjectURL(s.url);
 }
