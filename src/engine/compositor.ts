@@ -1,119 +1,128 @@
 import type { Rect } from '../lib/store';
 
 /**
- * Draws what the viewer sees: the captured window, eased zoom to Stage Marks,
- * and an optional camera bubble. What you see in the preview is what is encoded.
- *
- * Frames are pulled with MediaStreamTrackProcessor (not a <video> element), so
- * capture keeps flowing while the Take1 tab is hidden.
+ * Page-side handle for the compositor worker (compositor.worker.ts). The page only
+ * keeps the view geometry and the latest preview bitmap; drawing, zooming, the
+ * camera bubble, encoding, thumbnails and screen matching all run in the worker.
  */
 
-type Source = VideoFrame | HTMLVideoElement;
+export type Mask = { cx: number; cy: number; r: number } | null;
 
-const ease = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
-const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+export interface EncodedChunkMsg {
+  data: ArrayBuffer;
+  ts: number;
+  dur: number;
+  key: boolean;
+  config?: VideoDecoderConfig;
+}
 
 export class Compositor {
-  canvas: HTMLCanvasElement;
-  private ctx: CanvasRenderingContext2D;
   W = 1920;
   H = 1080;
-  private screen: Source | null = null;
-  private camera: Source | null = null;
-  private readers: { cancel: () => void }[] = [];
-  private from: Rect;
-  private to: Rect;
-  private t0 = 0;
-  private dur = 700;
   cameraOn = true;
-  background = '#0E0D0C';
+  /** latest downscaled frame of the output picture, for on-screen previews */
+  latest: ImageBitmap | null = null;
+  onChunk: ((c: EncodedChunkMsg) => void) | null = null;
+  onMatch: ((score: number) => void) | null = null;
+  onError: ((msg: string) => void) | null = null;
+  private worker: Worker;
+  private src = { w: 0, h: 0 };
+  private hasCamera = false;
+  private to: Rect = { x: 0, y: 0, w: 1920, h: 1080 };
+  private seq = 0;
+  private pending = new Map<number, (d: any) => void>();
 
   constructor() {
-    this.canvas = document.createElement('canvas');
-    this.canvas.className = 'stage-canvas';
-    this.ctx = this.canvas.getContext('2d', { alpha: false })!;
+    this.worker = new Worker(new URL('./compositor.worker.ts', import.meta.url), { type: 'module' });
+    this.worker.onmessage = (e) => this.onMessage(e.data);
     this.setSize(1920, 1080);
-    this.from = this.to = { x: 0, y: 0, w: this.W, h: this.H };
+  }
+
+  private onMessage(d: any) {
+    switch (d.type) {
+      case 'preview':
+        this.latest?.close();
+        this.latest = d.bmp;
+        break;
+      case 'chunk':
+        this.onChunk?.(d);
+        break;
+      case 'source':
+        this.src = { w: d.w, h: d.h };
+        break;
+      case 'match':
+        this.onMatch?.(d.score);
+        break;
+      case 'error':
+        this.onError?.(d.message);
+        break;
+      case 'reply': {
+        const r = this.pending.get(d.id);
+        this.pending.delete(d.id);
+        r?.(d);
+        break;
+      }
+    }
+  }
+
+  private ask<T = any>(msg: any): Promise<T> {
+    const id = ++this.seq;
+    return new Promise((resolve, reject) => {
+      this.pending.set(id, (d) => (d.error ? reject(new Error(d.error)) : resolve(d)));
+      this.worker.postMessage({ ...msg, id });
+    });
   }
 
   setSize(w: number, h: number) {
-    const scale = Math.min(1, 1920 / w, 1080 / h);
-    this.W = Math.max(2, Math.round((w * scale) / 2) * 2);
-    this.H = Math.max(2, Math.round((h * scale) / 2) * 2);
-    this.canvas.width = this.W;
-    this.canvas.height = this.H;
-    this.from = this.to = { x: 0, y: 0, w: this.W, h: this.H };
+    const k = Math.min(1, 1920 / w, 1080 / h);
+    this.W = Math.max(2, Math.round((w * k) / 2) * 2);
+    this.H = Math.max(2, Math.round((h * k) / 2) * 2);
+    this.to = { x: 0, y: 0, w: this.W, h: this.H };
+    this.worker.postMessage({ type: 'size', w: this.W, h: this.H });
   }
 
   attach(track: MediaStreamTrack, slot: 'screen' | 'camera') {
     const P = (window as any).MediaStreamTrackProcessor;
-    if (P) {
-      const reader = new P({ track }).readable.getReader() as ReadableStreamDefaultReader<VideoFrame>;
-      let alive = true;
-      this.readers.push({ cancel: () => ((alive = false), reader.cancel().catch(() => {})) });
-      (async () => {
-        while (alive) {
-          const { value, done } = await reader.read();
-          if (done || !value) break;
-          if (!alive) {
-            value.close();
-            break;
-          }
-          const prev = this[slot];
-          this[slot] = value;
-          if (prev && 'close' in prev) prev.close();
-        }
-      })().catch(() => {});
-    } else {
-      const v = document.createElement('video');
-      v.muted = true;
-      v.playsInline = true;
-      v.srcObject = new MediaStream([track]);
-      v.play().catch(() => {});
-      this[slot] = v;
+    if (!P) throw new Error('This browser can’t process video frames. Use Chrome or Edge.');
+    const readable = new P({ track }).readable as ReadableStream<VideoFrame>;
+    this.worker.postMessage({ type: 'attach', slot, readable }, [readable as unknown as Transferable]);
+    if (slot === 'camera') this.hasCamera = true;
+    else {
+      const s = track.getSettings();
+      this.src = { w: s.width ?? 0, h: s.height ?? 0 };
     }
     track.addEventListener('ended', () => this.detach(slot));
   }
 
   detach(slot: 'screen' | 'camera') {
-    const s = this[slot];
-    if (s && 'close' in s) s.close();
-    this[slot] = null;
-  }
-
-  dispose() {
-    this.readers.forEach((r) => r.cancel());
-    this.readers = [];
-    this.detach('screen');
-    this.detach('camera');
+    this.worker.postMessage({ type: 'detach', slot });
+    if (slot === 'camera') this.hasCamera = false;
+    else this.src = { w: 0, h: 0 };
   }
 
   get hasScreen() {
-    return !!this.screen;
+    return this.src.w > 0;
   }
 
-  private dims(s: Source) {
-    return s instanceof HTMLVideoElement
-      ? { w: s.videoWidth || 1, h: s.videoHeight || 1 }
-      : { w: s.displayWidth, h: s.displayHeight };
+  setCamera(on: boolean) {
+    this.cameraOn = on;
+    this.worker.postMessage({ type: 'camera', on });
   }
 
-  /** Where the whole source sits in the canvas (letterboxed "contain"). */
+  /** Where the whole window sits in the output frame (letterboxed). */
   private base(): Rect {
-    if (!this.screen) return { x: 0, y: 0, w: this.W, h: this.H };
-    const d = this.dims(this.screen);
-    const s = Math.min(this.W / d.w, this.H / d.h);
-    const w = d.w * s;
-    const h = d.h * s;
+    if (!this.src.w) return { x: 0, y: 0, w: this.W, h: this.H };
+    const k = Math.min(this.W / this.src.w, this.H / this.src.h);
+    const w = this.src.w * k;
+    const h = this.src.h * k;
     return { x: (this.W - w) / 2, y: (this.H - h) / 2, w, h };
   }
 
-  /** Turn a normalized source rect (a Stage Mark) into a canvas-space view rect. */
-  viewFor(mark: Rect | null): Rect {
-    if (!mark) return { x: 0, y: 0, w: this.W, h: this.H };
+  /** Turn a normalised box on the window into the output-space view that frames it. */
+  viewFor(box: Rect | null): Rect {
+    if (!box) return { x: 0, y: 0, w: this.W, h: this.H };
     const b = this.base();
-    let r = { x: b.x + mark.x * b.w, y: b.y + mark.y * b.h, w: mark.w * b.w, h: mark.h * b.h };
-    // breathing room, then match the output aspect around the centre
+    let r = { x: b.x + box.x * b.w, y: b.y + box.y * b.h, w: box.w * b.w, h: box.h * b.h };
     const pad = 0.06;
     r = { x: r.x - r.w * pad, y: r.y - r.h * pad, w: r.w * (1 + 2 * pad), h: r.h * (1 + 2 * pad) };
     const aspect = this.W / this.H;
@@ -123,20 +132,7 @@ export class Compositor {
     w = Math.max(w, this.W / 3.5); // never zoom past 3.5×
     w = Math.min(w, this.W);
     const h = w / aspect;
-    const x = Math.min(Math.max(cx - w / 2, 0), this.W - w);
-    const y = Math.min(Math.max(cy - h / 2, 0), this.H - h);
-    return { x, y, w, h };
-  }
-
-  current(now = performance.now()): Rect {
-    const t = Math.min(1, (now - this.t0) / this.dur);
-    const k = ease(t);
-    return {
-      x: lerp(this.from.x, this.to.x, k),
-      y: lerp(this.from.y, this.to.y, k),
-      w: lerp(this.from.w, this.to.w, k),
-      h: lerp(this.from.h, this.to.h, k),
-    };
+    return { x: Math.min(Math.max(cx - w / 2, 0), this.W - w), y: Math.min(Math.max(cy - h / 2, 0), this.H - h), w, h };
   }
 
   get target() {
@@ -144,96 +140,68 @@ export class Compositor {
   }
 
   setView(v: Rect, animate = true) {
-    const now = performance.now();
-    this.from = animate ? this.current(now) : v;
     this.to = v;
-    this.t0 = now;
+    this.worker.postMessage({ type: 'view', rect: v, animate });
   }
 
-  draw(now = performance.now()) {
-    const { ctx, W, H } = this;
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.fillStyle = this.background;
-    ctx.fillRect(0, 0, W, H);
-    if (!this.screen) {
-      ctx.fillStyle = '#2A2724';
-      ctx.font = `500 ${Math.round(H / 28)}px Inter, system-ui, sans-serif`;
-      ctx.textAlign = 'center';
-      ctx.fillText('No window shared yet', W / 2, H / 2);
-      return;
-    }
-    const v = this.current(now);
-    const s = W / v.w;
-    const b = this.base();
-    ctx.imageSmoothingQuality = 'high';
-    ctx.setTransform(s, 0, 0, s, -v.x * s, -v.y * s);
+  /** Where the camera bubble sits, normalised, so screen matching can ignore it. */
+  cameraMask(): Mask {
+    if (!this.cameraOn || !this.hasCamera) return null;
+    const size = this.H * 0.22;
+    const m = this.H * 0.035;
+    return { cx: (this.W - m - size / 2) / this.W, cy: (this.H - m - size / 2) / this.H, r: size / 2 / this.H };
+  }
+
+  async configure(fps: number, bitrate: number): Promise<string> {
+    return (await this.ask({ type: 'configure', fps, bitrate })).codec;
+  }
+
+  encode(ts: number, dur: number, key: boolean) {
+    this.worker.postMessage({ type: 'encode', ts, dur, key });
+  }
+
+  private viewers = 0;
+  /** A preview on screen started showing the picture; returns the matching "stopped". */
+  watch() {
+    this.worker.postMessage({ type: 'viewers', count: ++this.viewers });
+    let done = false;
+    return () => {
+      if (done) return;
+      done = true;
+      this.worker.postMessage({ type: 'viewers', count: --this.viewers });
+    };
+  }
+
+  /** Close the encoder once a recording is finished (sharing a window configures a new one). */
+  async release() {
+    await this.ask({ type: 'release' });
+  }
+
+  /** Resolves after every chunk encoded so far has been delivered to onChunk. */
+
+  async flush() {
+    await this.ask({ type: 'flush' });
+  }
+
+  async snapshot(width = 480): Promise<Blob | null> {
     try {
-      ctx.drawImage(this.screen as CanvasImageSource, b.x, b.y, b.w, b.h);
+      return (await this.ask({ type: 'snapshot', width })).blob;
     } catch {
-      /* frame closed mid-draw */
+      return null;
     }
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    if (this.cameraOn && this.camera) this.drawCamera();
   }
 
-  private drawCamera() {
-    const { ctx, W, H } = this;
-    const c = this.camera!;
-    const d = this.dims(c);
-    const size = Math.round(H * 0.22);
-    const m = Math.round(H * 0.035);
-    const x = W - size - m;
-    const y = H - size - m;
-    const side = Math.min(d.w, d.h);
-    ctx.save();
-    ctx.beginPath();
-    ctx.arc(x + size / 2, y + size / 2, size / 2, 0, Math.PI * 2);
-    ctx.clip();
-    try {
-      // mirror the selfie view
-      ctx.translate(x + size, y);
-      ctx.scale(-1, 1);
-      ctx.drawImage(c as CanvasImageSource, (d.w - side) / 2, (d.h - side) / 2, side, side, 0, 0, size, size);
-    } catch {
-      /* ignore */
-    }
-    ctx.restore();
-    ctx.beginPath();
-    ctx.arc(x + size / 2, y + size / 2, size / 2 - 1, 0, Math.PI * 2);
-    ctx.lineWidth = Math.max(2, H / 360);
-    ctx.strokeStyle = 'rgba(242,237,228,0.22)';
-    ctx.stroke();
+  /** A still of the raw window ('source') or of the recorded picture ('output'). */
+  async freeze(which: 'source' | 'output'): Promise<{ url: string; aspect: number } | null> {
+    const d = await this.ask({ type: 'freeze', which });
+    if (!d.blob) return null;
+    return { url: URL.createObjectURL(d.blob), aspect: d.aspect };
   }
 
-  /** Raw (un-zoomed) source frame as a data URL, for drawing Stage Marks. */
-  freezeSource(maxW = 1280): { url: string; aspect: number } | null {
-    if (!this.screen) return null;
-    const d = this.dims(this.screen);
-    const s = Math.min(1, maxW / d.w);
-    const c = document.createElement('canvas');
-    c.width = Math.round(d.w * s);
-    c.height = Math.round(d.h * s);
-    c.getContext('2d')!.drawImage(this.screen as CanvasImageSource, 0, 0, c.width, c.height);
-    return { url: c.toDataURL('image/jpeg', 0.85), aspect: d.w / d.h };
+  /** Start (or stop, with null) scoring the live picture against a reference frame. */
+  async setMatchRef(src: ImageBitmap | Blob | null) {
+    if (!src) return this.worker.postMessage({ type: 'matchRef', bitmap: null, mask: null });
+    const bitmap = await createImageBitmap(src);
+    this.worker.postMessage({ type: 'matchRef', bitmap, mask: this.cameraMask() }, [bitmap]);
   }
-}
-
-/** 64×36 grayscale signature, used to score how well the live screen matches the splice frame. */
-export function signature(src: CanvasImageSource, w = 64, h = 36): Float32Array {
-  const c = document.createElement('canvas');
-  c.width = w;
-  c.height = h;
-  const x = c.getContext('2d', { willReadFrequently: true })!;
-  x.drawImage(src, 0, 0, w, h);
-  const d = x.getImageData(0, 0, w, h).data;
-  const out = new Float32Array(w * h);
-  for (let i = 0; i < out.length; i++) out[i] = (d[i * 4] * 0.299 + d[i * 4 + 1] * 0.587 + d[i * 4 + 2] * 0.114) / 255;
-  return out;
-}
-
-export function matchScore(a: Float32Array, b: Float32Array) {
-  let mad = 0;
-  for (let i = 0; i < a.length; i++) mad += Math.abs(a[i] - b[i]);
-  mad /= a.length;
-  return Math.max(0, Math.min(1, 1 - mad / 0.18));
 }
