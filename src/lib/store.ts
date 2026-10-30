@@ -2,7 +2,7 @@ import { useSyncExternalStore } from 'react';
 
 /** 'hold' is the sped-up state ("speed up 4×"); 'paused' records nothing until Play. */
 export type Phase = 'idle' | 'rolling' | 'paused' | 'rewinding' | 'preroll' | 'hold' | 'wrapped';
-export type Screen = 'welcome' | 'setup' | 'record' | 'review' | 'export' | 'library';
+export type Screen = 'welcome' | 'setup' | 'record' | 'review' | 'export' | 'library' | 'settings';
 export type Tone = 'rec' | 'cue' | 'hold' | 'redact' | 'ok' | 'muted';
 
 export interface Rect { x: number; y: number; w: number; h: number }
@@ -51,6 +51,8 @@ export interface Settings {
   pill: boolean;
   /** default factor for "speed up" */
   speed: number;
+  /** desktop app: say "Take one, …" to give a command without holding keys */
+  wake: boolean;
 }
 
 /** Hold-to-talk combos. Fn isn't offered: on Windows laptops the Fn key never reaches the OS. */
@@ -136,6 +138,8 @@ export interface AppState {
   holdBadge: string | null;
   toast: { id: number; text: string; tone: Tone } | null;
   pillOpen: boolean;
+  /** desktop: where the floating bar sits (from the shell) */
+  pillPlace: { side: 'left' | 'right'; cx: number; cy: number; display: { x: number; y: number; width: number; height: number } } | null;
   desktop: boolean;
   pickingSource: boolean;
   trying: boolean;
@@ -227,7 +231,8 @@ const initial: AppState = {
   shortcuts: { ...DEFAULT_SHORTCUTS, ...saved.shortcuts },
   talkKey: saved.talkKey ?? 'Ctrl+Shift',
   talkHook: true,
-  settings: { sounds: true, prerollAudio: true, replaySeconds: 5, countdown: 3, pill: true, speed: 4, ...saved.settings },
+  settings: { sounds: true, prerollAudio: true, replaySeconds: 5, countdown: 3, pill: true, speed: 4, wake: false, ...saved.settings },
+  pillPlace: null,
 };
 
 let state: AppState = initial;

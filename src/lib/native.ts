@@ -7,6 +7,14 @@ export interface NativeSource {
   kind: 'window' | 'screen';
 }
 
+/** Where the floating bar is: its side, its centre on screen, and that screen's bounds (DIP). */
+export interface PillPlace {
+  side: 'left' | 'right';
+  cx: number;
+  cy: number;
+  display: { x: number; y: number; width: number; height: number };
+}
+
 export interface Take1Native {
   isDesktop: true;
   platform: string;
@@ -20,6 +28,15 @@ export interface Take1Native {
   chooseSource(id: string): Promise<void>;
   pillInteractive(on: boolean): void;
   pillVisible(on: boolean): void;
+  /** drag the floating bar: 'start' follows the pointer, 'end' snaps it to the nearer side edge */
+  pillDrag(phase: 'start' | 'end'): void;
+  /** put the bar back on the right edge, centred */
+  pillReset(): void;
+  pillWhere(): Promise<PillPlace>;
+  onPillPlaced(cb: (p: PillPlace) => void): void;
+  getOpenAtLogin(): Promise<boolean>;
+  setOpenAtLogin(on: boolean): Promise<boolean>;
+  version(): Promise<string>;
   showMain(): void;
   hideMain(): void;
   /** Google sign-in through the system browser (loopback + PKCE); keeps a refresh token. */

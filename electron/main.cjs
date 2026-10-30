@@ -3,9 +3,11 @@
  *
  *  - Hold-to-talk from any app (Ctrl+Shift by default, via a low-level keyboard hook),
  *    plus global shortcuts (Ctrl+Alt+R record, Ctrl+Alt+C cut, ...).
- *  - Floating controls on the right edge of the screen: transparent, always on top,
- *    never steal focus, and excluded from screen capture (setContentProtection) so
- *    they never appear in your video, even when you record the whole screen.
+ *  - A slim floating bar on the edge of the screen (you drag it where you want it):
+ *    transparent, always on top, never steals focus, and excluded from screen
+ *    capture (setContentProtection) so it never appears in your video.
+ *  - A click-through overlay across the whole screen for command animations, the
+ *    replay after "cut" and the 3-2-1 countdown, also excluded from capture.
  *  - Google sign-in for YouTube / Drive uploads through the system browser
  *    (loopback redirect + PKCE), with the refresh token encrypted by the OS.
  *  - A custom window/screen picker (desktopCapturer) behind getDisplayMedia.
@@ -21,6 +23,7 @@ const { pathToFileURL } = require('url');
 const DEV_URL = process.env.TAKE1_DEV_URL;
 const DIST = path.join(__dirname, '..', 'dist');
 const SETTINGS = () => path.join(app.getPath('userData'), 'shortcuts.json');
+const DESKTOP = () => path.join(app.getPath('userData'), 'desktop.json');
 
 const DEFAULTS = {
   record: 'Ctrl+Alt+R',
@@ -37,6 +40,7 @@ protocol.registerSchemesAsPrivileged([
 
 let main = null;
 let pill = null;
+let fx = null;
 let pendingSource = null;
 let shortcuts = { ...DEFAULTS };
 let talk = 'Ctrl+Shift';
@@ -92,6 +96,8 @@ function startTalkHook() {
       }, 140);
     }
   });
+  // a drag of the bar always ends when the mouse button comes up, wherever that is
+  uIOhook.on('mouseup', () => drag && dragEnd());
   uIOhook.on('keyup', (e) => {
     down.delete(e.keycode);
     if (pending && !satisfied()) clearTimeout(pending), (pending = null);
@@ -145,12 +151,105 @@ function registerAll() {
   return ok;
 }
 
-/** The controls sit on the right edge, vertically centred, like Flow's side controls. */
+// ───────────────── the floating bar: where it sits ─────────────────
+
+/** The bar's window: room for the opened column, its labels and the cards beside it. */
 const RAIL = { w: 380, h: 560 };
-function placePill() {
+/** keeps the opened column (about 380 px tall) on screen */
+const EDGE_MARGIN = 200;
+
+let barPlace = { displayId: null, side: 'right', frac: 0.5 };
+
+function readDesktop() {
+  try {
+    return JSON.parse(fs.readFileSync(DESKTOP(), 'utf8'));
+  } catch {
+    return {};
+  }
+}
+function writeDesktop(patch) {
+  try {
+    fs.writeFileSync(DESKTOP(), JSON.stringify({ ...readDesktop(), ...patch }, null, 2));
+  } catch {
+    /* read-only profile */
+  }
+}
+
+function barDisplay() {
+  const all = screen.getAllDisplays();
+  return all.find((d) => d.id === barPlace.displayId) || screen.getPrimaryDisplay();
+}
+
+/** Where the bar's centre is on screen, and the window around it. */
+function barGeometry() {
+  const d = barDisplay();
+  const wa = d.workArea;
+  const lo = wa.y + Math.min(EDGE_MARGIN, wa.height / 2);
+  const hi = wa.y + wa.height - Math.min(EDGE_MARGIN, wa.height / 2);
+  const cy = Math.round(Math.min(hi, Math.max(lo, wa.y + barPlace.frac * wa.height)));
+  const x = barPlace.side === 'left' ? wa.x : wa.x + wa.width - RAIL.w;
+  return { display: d, cy, bounds: { x: Math.round(x), y: Math.round(cy - RAIL.h / 2), width: RAIL.w, height: RAIL.h } };
+}
+
+/** Tell the page where the bar is, so the overlay can grow the replay out of it. */
+function announcePlace() {
+  const g = barGeometry();
+  const cx = barPlace.side === 'left' ? g.bounds.x + 37 : g.bounds.x + RAIL.w - 37;
+  if (main && !main.isDestroyed()) main.webContents.send('pill:placed', { side: barPlace.side, cx, cy: g.cy, display: g.display.bounds });
+  if (fx && !fx.isDestroyed()) fx.setBounds(g.display.bounds);
+}
+
+let slide = null;
+/** Move the bar's window, gliding when `animate` (snapping to an edge after a drag). */
+function moveBar(target, animate) {
   if (!pill || pill.isDestroyed()) return;
-  const d = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
-  pill.setBounds({ x: Math.round(d.x + d.width - RAIL.w), y: Math.round(d.y + (d.height - RAIL.h) / 2), width: RAIL.w, height: RAIL.h });
+  if (slide) clearInterval(slide), (slide = null);
+  if (!animate) return pill.setBounds(target);
+  const from = pill.getBounds();
+  const t0 = Date.now();
+  const D = 220;
+  slide = setInterval(() => {
+    if (!pill || pill.isDestroyed()) return clearInterval(slide);
+    const k = Math.min(1, (Date.now() - t0) / D);
+    const e = 1 - Math.pow(1 - k, 3);
+    pill.setBounds({ x: Math.round(from.x + (target.x - from.x) * e), y: Math.round(from.y + (target.y - from.y) * e), width: RAIL.w, height: RAIL.h });
+    if (k >= 1) clearInterval(slide), (slide = null);
+  }, 16);
+}
+
+function placePill(animate = false) {
+  if (!pill || pill.isDestroyed()) return;
+  moveBar(barGeometry().bounds, animate);
+  announcePlace();
+}
+
+/** Dragging: the window follows the pointer; letting go snaps it to the nearer side edge. */
+let drag = null;
+function dragStart() {
+  if (!pill || pill.isDestroyed() || drag) return;
+  const c = screen.getCursorScreenPoint();
+  const b = pill.getBounds();
+  drag = { dx: c.x - b.x, dy: c.y - b.y, timer: null };
+  drag.timer = setInterval(() => {
+    if (!pill || pill.isDestroyed()) return dragEnd();
+    const p = screen.getCursorScreenPoint();
+    pill.setBounds({ x: p.x - drag.dx, y: p.y - drag.dy, width: RAIL.w, height: RAIL.h });
+  }, 16);
+}
+function dragEnd() {
+  if (!drag) return;
+  clearInterval(drag.timer);
+  drag = null;
+  if (!pill || pill.isDestroyed()) return;
+  const b = pill.getBounds();
+  // the bar sits in the window's middle row, on the side it was on while dragging
+  const cx = barPlace.side === 'left' ? b.x + 37 : b.x + RAIL.w - 37;
+  const cy = b.y + RAIL.h / 2;
+  const d = screen.getDisplayNearestPoint({ x: Math.round(cx), y: Math.round(cy) });
+  const wa = d.workArea;
+  barPlace = { displayId: d.id, side: cx < wa.x + wa.width / 2 ? 'left' : 'right', frac: Math.min(1, Math.max(0, (cy - wa.y) / wa.height)) };
+  writeDesktop({ bar: barPlace });
+  placePill(true);
 }
 
 function createMain() {
@@ -197,11 +296,46 @@ function createMain() {
         },
       };
     }
+    if (frameName === 'take1-fx') {
+      return {
+        action: 'allow',
+        overrideBrowserWindowOptions: {
+          ...barDisplay().bounds,
+          frame: false,
+          transparent: true,
+          backgroundColor: '#00000000',
+          resizable: false,
+          movable: false,
+          minimizable: false,
+          maximizable: false,
+          fullscreenable: false,
+          skipTaskbar: true,
+          focusable: false,
+          hasShadow: false,
+          alwaysOnTop: true,
+          show: false,
+          webPreferences: { backgroundThrottling: false },
+        },
+      };
+    }
     if (/^https?:/.test(url)) shell.openExternal(url);
     return { action: 'deny' };
   });
 
   main.webContents.on('did-create-window', (win, details) => {
+    if (details.frameName === 'take1-fx') {
+      // whole-screen animations: never clickable, never recorded, under the bar
+      fx = win;
+      fx.setAlwaysOnTop(true, 'pop-up-menu');
+      fx.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+      fx.setContentProtection(true);
+      fx.setIgnoreMouseEvents(true);
+      fx.setBounds(barDisplay().bounds);
+      fx.showInactive();
+      if (pill && !pill.isDestroyed()) pill.moveTop();
+      fx.on('closed', () => (fx = null));
+      return;
+    }
     if (details.frameName !== 'take1-pill') return;
     pill = win;
     pill.setAlwaysOnTop(true, 'screen-saver');
@@ -212,17 +346,37 @@ function createMain() {
     pill.showInactive();
     pill.on('closed', () => (pill = null));
   });
+  // the page is ready to hear where the bar is
+  main.webContents.on('did-finish-load', () => announcePlace());
 
   main.on('closed', () => {
     main = null;
     if (pill && !pill.isDestroyed()) pill.close();
+    if (fx && !fx.isDestroyed()) fx.close();
   });
 
   if (DEV_URL) main.loadURL(DEV_URL);
   else main.loadURL('app://take1/index.html');
 }
 
+// one Take1 at a time: opening it again brings the running one forward
+const firstInstance = app.requestSingleInstanceLock();
+if (!firstInstance) app.quit();
+app.on('second-instance', () => {
+  if (!main) return;
+  if (main.isMinimized()) main.restore();
+  main.show();
+  main.focus();
+});
+
 app.whenReady().then(() => {
+  if (!firstInstance) return;
+  const saved = readDesktop();
+  if (saved.bar && (saved.bar.side === 'left' || saved.bar.side === 'right')) barPlace = { displayId: saved.bar.displayId ?? null, side: saved.bar.side, frac: Number(saved.bar.frac) || 0.5 };
+  // a monitor plugged in or out: put the bar back somewhere visible
+  screen.on('display-removed', () => placePill(true));
+  screen.on('display-metrics-changed', () => placePill(false));
+
   protocol.handle('app', (req) => {
     const { pathname } = new URL(req.url);
     let file = path.normalize(path.join(DIST, decodeURIComponent(pathname)));
@@ -309,8 +463,29 @@ app.whenReady().then(() => {
     if (on) {
       placePill();
       pill.showInactive();
-    } else pill.hide();
+      if (fx && !fx.isDestroyed()) fx.showInactive();
+      pill.moveTop();
+    } else {
+      pill.hide();
+      if (fx && !fx.isDestroyed()) fx.hide();
+    }
   });
+  ipcMain.on('pill:drag', (_e, phase) => (phase === 'start' ? dragStart() : dragEnd()));
+  ipcMain.on('pill:reset', () => {
+    barPlace = { displayId: screen.getPrimaryDisplay().id, side: 'right', frac: 0.5 };
+    writeDesktop({ bar: barPlace });
+    placePill(true);
+  });
+  ipcMain.handle('pill:where', () => {
+    const g = barGeometry();
+    return { side: barPlace.side, cx: barPlace.side === 'left' ? g.bounds.x + 37 : g.bounds.x + RAIL.w - 37, cy: g.cy, display: g.display.bounds };
+  });
+  ipcMain.handle('login:get', () => app.getLoginItemSettings().openAtLogin);
+  ipcMain.handle('login:set', (_e, on) => {
+    app.setLoginItemSettings({ openAtLogin: !!on });
+    return app.getLoginItemSettings().openAtLogin;
+  });
+  ipcMain.handle('app:version', () => app.getVersion());
   ipcMain.on('main:show', () => {
     if (!main) return createMain();
     if (main.isMinimized()) main.restore();
