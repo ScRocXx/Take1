@@ -1,37 +1,35 @@
-import { useEffect } from 'react';
+import { Fragment, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { director, keyHandler, keyUpHandler, releaseKeys } from './engine/director';
+import { recorder, keyHandler, keyUpHandler, releaseKeys } from './engine/recorder';
 import { native } from './lib/native';
 import { library } from './lib/library';
 import { useStore, store, type Screen } from './lib/store';
 import { Keys, Wordmark } from './ui/components';
-import { Pill } from './ui/Pill';
+import { FloatingControls } from './ui/FloatingControls';
 import { Help } from './ui/Help';
-import { GreenRoom } from './screens/GreenRoom';
-import { Stage } from './screens/Stage';
-import { Console } from './screens/Console';
-import { Dailies } from './screens/Dailies';
-import { Wrap } from './screens/Wrap';
+import { Setup, Welcome } from './screens/Setup';
+import { Record } from './screens/Record';
+import { Review } from './screens/Review';
+import { Export } from './screens/Export';
 import { Library } from './screens/Library';
 
 const STEPS: { key: Screen; label: string }[] = [
-  { key: 'greenroom', label: 'Setup' },
-  { key: 'stage', label: 'Window' },
-  { key: 'console', label: 'Record' },
-  { key: 'dailies', label: 'Review' },
-  { key: 'wrap', label: 'Export' },
+  { key: 'setup', label: 'Setup' },
+  { key: 'record', label: 'Record' },
+  { key: 'review', label: 'Review' },
+  { key: 'export', label: 'Export' },
 ];
 
 export function App() {
   const screen = useStore((s) => s.screen);
-  const pillOpen = useStore((s) => s.pillOpen);
+  const floating = useStore((s) => s.pillOpen);
   const toast = useStore((s) => s.toast);
   const phase = useStore((s) => s.phase);
   const accel = useStore((s) => s.talkKey);
   const hasScreen = useStore((s) => s.hasScreen);
   const micOn = useStore((s) => s.micOn);
   const duration = useStore((s) => s.duration);
-  const takes = useStore((s) => s.library.length);
+  const unseen = useStore((s) => s.library.filter((t) => !t.seen).length);
   const helpOpen = useStore((s) => s.helpOpen);
 
   useEffect(() => {
@@ -39,8 +37,8 @@ export function App() {
     window.addEventListener('keyup', keyUpHandler);
     window.addEventListener('blur', releaseKeys);
     library.refresh();
-    // desktop: the pill is the app's front door, so it's there from the start
-    if (native) setTimeout(() => director.openPill(), 400);
+    // desktop: the floating controls are there from the start, like Flow's
+    if (native) setTimeout(() => recorder.openPill(), 400);
     return () => {
       window.removeEventListener('keydown', keyHandler);
       window.removeEventListener('keyup', keyUpHandler);
@@ -51,37 +49,42 @@ export function App() {
   const idx = STEPS.findIndex((s) => s.key === screen);
   const recording = phase !== 'idle' && phase !== 'wrapped';
   const canGo = (k: Screen) =>
-    recording
-      ? false
-      : k === 'greenroom'
-        ? true
-        : k === 'stage'
-          ? micOn
-          : k === 'console'
-            ? hasScreen && phase === 'idle'
-            : k === 'dailies' || k === 'wrap'
-              ? phase === 'wrapped' && duration > 0
-              : false;
+    recording ? false : k === 'setup' ? true : k === 'record' ? micOn && hasScreen && phase === 'idle' : phase === 'wrapped' && duration > 0;
 
   return (
     <div className={`app scr-${screen}`}>
       <nav className="topnav">
-        <button className="wm-btn" onClick={() => !recording && store.set({ screen: 'greenroom' })} aria-label="Take1 home">
+        <button className="wm-btn" onClick={() => !recording && store.set({ screen: 'welcome' })} aria-label="Take1 home">
           <Wordmark />
         </button>
         <ol className="steps">
           {STEPS.map((s, i) => (
-            <li key={s.key} className={i === idx ? 'now' : idx >= 0 && i < idx ? 'past' : ''}>
-              <button disabled={i === idx || !canGo(s.key)} onClick={() => store.set({ screen: s.key })}>
-                <span className="step-i">{i + 1}</span>
-                {s.label}
-              </button>
-            </li>
+            <Fragment key={s.key}>
+              {i > 0 && (
+                <li className={`step-arrow ${i === idx + 1 && canGo(s.key) ? 'next' : i <= idx ? 'done' : ''}`} aria-hidden>
+                  <svg viewBox="0 0 40 12" width="40" height="12">
+                    <path className="sa-line" d="M2 6h32" />
+                    <path className="sa-head" d="M30 2l5 4-5 4" />
+                  </svg>
+                </li>
+              )}
+              <li className={i === idx ? 'now' : idx >= 0 && i < idx ? 'past' : ''}>
+                <button disabled={i === idx || !canGo(s.key)} onClick={() => store.set({ screen: s.key })}>
+                  <span className="step-i">{i + 1}</span>
+                  {s.label}
+                </button>
+              </li>
+            </Fragment>
           ))}
         </ol>
         <div className="nav-right">
-          <button className={`nav-link ${screen === 'library' ? 'on' : ''}`} disabled={recording} onClick={() => store.set({ screen: 'library' })}>
-            Library{takes ? <span className="count-pill">{takes}</span> : null}
+          <button
+            className={`nav-link ${screen === 'library' ? 'on' : ''}`}
+            disabled={recording}
+            onClick={() => store.set({ screen: 'library' })}
+            title={unseen ? `${unseen} new recording${unseen === 1 ? '' : 's'}` : undefined}
+          >
+            Library{unseen ? <span className="count-pill">{unseen} new</span> : null}
           </button>
           <button className="nav-link" onClick={() => store.set({ helpOpen: true })}>
             How it works
@@ -89,17 +92,19 @@ export function App() {
           <span className="nav-hint">
             Hold <Keys accel={accel} /> to talk
           </span>
-          <span className={`status ${recording ? 'live' : ''}`}>
-            <span className={`dot dot-${phase}`} />
-            {recording ? 'Recording' : 'Standby'}
-          </span>
+          {recording && (
+            <span className={`status live ph-${phase}`}>
+              <span className={`dot dot-${phase}`} />
+              {phase === 'paused' ? 'Paused' : 'Recording'}
+            </span>
+          )}
         </div>
       </nav>
-      {screen === 'greenroom' && <GreenRoom />}
-      {screen === 'stage' && <Stage />}
-      {screen === 'console' && <Console />}
-      {screen === 'dailies' && <Dailies />}
-      {screen === 'wrap' && <Wrap />}
+      {screen === 'welcome' && <Welcome />}
+      {screen === 'setup' && <Setup />}
+      {screen === 'record' && <Record />}
+      {screen === 'review' && <Review />}
+      {screen === 'export' && <Export />}
       {screen === 'library' && <Library />}
       {helpOpen && <Help />}
       {toast && (
@@ -107,7 +112,7 @@ export function App() {
           {toast.text}
         </div>
       )}
-      {pillOpen && director.pillRoot && createPortal(<Pill docked={!native && !(window as any).__pillFloat} />, director.pillRoot)}
+      {floating && recorder.pillRoot && createPortal(<FloatingControls layout={(window as any).__fcLayout ?? (native ? 'rail' : 'remote')} />, recorder.pillRoot)}
     </div>
   );
 }
