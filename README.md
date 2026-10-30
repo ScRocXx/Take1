@@ -1,53 +1,33 @@
-# Take1 🎬
+# Take1
 
-**Mess up out loud. Ship take one.**
+**A screen recorder you control with your voice.**
 
-Take1 is a screen recorder you direct with your voice. You fluff a line, hold <kbd>Ctrl</kbd> + <kbd>Shift</kbd>, say *“cut”* and let go. Take1 rewinds to the start of that sentence, plays back the last five seconds so you catch your rhythm, counts you in, and you say it again. The bad take never makes it into the video.
+Record a demo the way you'd give it live. If you fluff a sentence, hold <kbd>Ctrl</kbd> + <kbd>Shift</kbd>, say *"cut"* and let go: that sentence is removed, the last five seconds play back so you catch your rhythm, and after 3, 2, 1 you say it again. Need a moment? *"Pause"*, then *"play"*. Waiting for a build? *"Speed up"* and the wait plays at 4×. Flashed a password? *"Blur that"* and drag over it.
 
-When you say *“that’s a wrap”*, the video is already finished: an MP4, captions, chapters, a ready-to-paste post and a blooper reel. You spend no time in an editor.
+When you stop, the video is already edited. Export the MP4 with captions and chapters, then save it to a folder or upload it to YouTube or Google Drive.
 
-![Recording a take: the console with the live picture and the dock](docs/screens/03-record.jpg)
-
-> Built for the **Wispr Flow #NoHandsChallenge**, and built by voice with Wispr Flow.
+![Recording: the live picture, the controls dock and the list of commands](docs/images/record.jpg)
 
 ---
 
 ## Contents
 
-- [Why this exists](#why-this-exists)
 - [Quick start](#quick-start)
-- [A take, start to finish](#a-take-start-to-finish)
-- [Push to talk](#push-to-talk-it-never-listens-on-its-own)
+- [Four steps](#four-steps)
+- [Push to talk](#push-to-talk)
 - [What you can say](#what-you-can-say)
 - [Shortcuts](#shortcuts)
-- [The floating pill](#the-floating-pill)
-- [How a Cut actually works](#how-a-cut-actually-works)
-- [Review, Export and Library](#review-export-and-library)
-- [Captions](#captions)
+- [The floating controls](#the-floating-controls)
+- [How Cut works](#how-cut-works)
+- [Review](#review)
+- [Export, captions and chapters](#export-captions-and-chapters)
+- [Uploading to YouTube and Google Drive](#uploading-to-youtube-and-google-drive)
+- [Library](#library)
 - [Architecture](#architecture)
-- [The hard parts](#the-hard-parts)
+- [Engineering notes](#engineering-notes)
 - [Project structure](#project-structure)
 - [Troubleshooting](#troubleshooting)
 - [Known limits](#known-limits)
-
----
-
-## Why this exists
-
-Recording a product demo usually goes like this. You record, stumble on the third sentence, then stop, delete and start over. Or you push through and spend twenty minutes in an editor finding the stumble, cutting it out, and fixing the jump in the picture.
-
-Audiobook narrators solved this decades ago with **punch-and-roll** recording. When they misread a line, the engineer rolls back a few seconds and plays it to them, then punches in at the right moment. The narrator picks up mid-flow, and the fluff is gone for good.
-
-Take1 brings punch-and-roll to screen recording and puts it under voice control, so you can do it without taking your hands off the demo:
-
-| You do | Take1 does |
-| --- | --- |
-| Fluff a line and say *“cut”* | Finds where your sentence started, rewinds there, deletes everything after it, replays the last 5 s and counts you back in |
-| Wait for a build and say *“hold”* | Plays the dead air at 8× until you say *“action”* |
-| Say *“zoom terminal”* | Eases the camera into a part of the window you named earlier |
-| Flash an API key and say *“redact that”* | Blurs the last 5 s on export |
-| Say *“mark it, live demo”* | Drops a named chapter |
-| Say *“that’s a wrap”* | Finishes the video |
 
 ---
 
@@ -58,299 +38,300 @@ You need **Node 18+** and **Chrome or Edge** (Take1 uses WebCodecs).
 ```bash
 npm install
 
-npm run app        # desktop app, recommended: talk key works from any app
+npm run app        # desktop app (recommended): talk keys work from any app
 npm run app:dev    # desktop app with hot reload
 npm run dev        # browser only, opens http://localhost:5173
 ```
 
-The first time you turn on the mic, the voice engine downloads once (about 60 MB) and is cached. After that, voice recognition runs **on your computer**. Nothing you say is uploaded.
-
-> **Upgrading from an earlier build?** Run `npm install` again, because new dependencies were added (`electron`, `uiohook-napi`, …). If the dev server shows old screens after you pull changes, stop it and run `npm run dev` again.
+The first time you turn on the microphone, the command model downloads once (about 60 MB) and is cached. A larger, more accurate model (about 80 MB) follows in the background; it makes captions and double-checks unclear commands. After that, recognition runs **on your computer**. Nothing you say is uploaded.
 
 ---
 
-## A take, start to finish
+## Four steps
 
-The top bar shows five steps. You can always see where you are, and later steps unlock as you go.
+The top bar shows where you are. The arrow after the current step lights up as soon as you can move on.
 
 ```mermaid
 flowchart LR
-    A["① Setup<br/>mic + try a command"] --> B["② Window<br/>pick what you'll demo"]
-    B --> C["③ Record<br/>talk, cut, hold, zoom"]
-    C -->|"that's a wrap"| D["④ Review<br/>watch the finished cut"]
-    D --> E["⑤ Export<br/>MP4, captions, post"]
-    E --> L[("Library<br/>every take, saved")]
-    C -. cut .-> C
+    A["① Setup<br/>mic · window · camera"] --> B["② Record<br/>talk, cut, pause, speed up"]
+    B -->|"stop recording"| C["③ Review<br/>watch it, fix chapters and blurs"]
+    C --> D["④ Export<br/>MP4 · captions · upload"]
+    D --> L[("Library")]
+    B -. "cut" .-> B
 ```
 
-### ① Setup: *mess up out loud*
+### ① Setup
 
-Turn on the mic, pick an input and watch the level meter. Then **try push-to-talk**: hold the keys (they light up as you press them), say a command and let go. Each command you try turns green. Nothing is recorded in this step, so it's safe to experiment.
+Turn on the microphone, choose the window you'll show, and optionally your webcam. The first time, Setup also explains push-to-talk and lets you practise; after that it's one compact screen.
 
-![Setup: mic and push-to-talk practice](docs/screens/01-setup.jpg)
+![Setup on first use, with push-to-talk practice](docs/images/setup-first.jpg)
 
-### ② Window: *pick your shot*
+*Zoom spots* are optional. You can name parts of the window in advance ("terminal", "preview"), or just say *"zoom in"* while recording and draw the area then.
 
-Choose the **window** you'll demo. A single window is safer than a whole screen because notifications and other apps stay out of the video. Optionally:
+### ② Record
 
-- **Zoom spots.** Drag a box around a part of the window and name it (“terminal”, “preview”). During the take, say *“zoom terminal”* and the camera eases in.
-- **Camera bubble.** Puts your webcam in the bottom-right corner.
+Press **Record** (or hold the talk keys and say *"start recording"*) and talk through your demo.
 
-![Window: choose a source and name zoom spots](docs/screens/02-window.jpg)
+| You say | What happens |
+| --- | --- |
+| **Cut** | The sentence you just said is removed. The 5 s before it play back, with sound, then recording continues after 3, 2, 1. |
+| **Pause** / **Play** | Recording stops completely until you say *play*. The word "pause" itself is trimmed off. |
+| **Speed up** / **Hold 3×** | The wait plays at 4× (or 2×, 3×, 8×…) in the final video until you say *play*. |
+| **Blur that** | Recording pauses and shows the frame. Drag over what should be hidden. It's blurred for the 5 s before you asked, and optionally until you say *unblur*. |
+| **Zoom in** | Recording pauses so you can drag the area to zoom into (or *"zoom terminal"* jumps straight to a named spot). |
+| **Chapter: setup** | Adds a chapter called "Setup" at that point. |
+| **Stop recording** | Done. Opens Review. |
 
-### ③ Record: *direct it*
+![After "cut": the replay, the countdown and the screen match](docs/images/replay.jpg)
 
-Press **Record** (or hold the keys and say *“action”*). Talk through your demo like normal. The **How to direct** card on the right is the cheat sheet; **Full guide** opens the manual.
+While the replay plays, the **screen match** meter compares your screen now with how it looked where you'll resume, so you don't continue with the wrong tab open. It ignores your webcam bubble.
 
-When you say *cut*, the monitor turns into the **replay**. On the left, the last five seconds before the splice play back with sound. On the right are the countdown, a thumbnail of the exact frame you'll resume from, and a **match meter** that turns green when your screen looks the way it did, so you don't punch in with the wrong tab open.
+| Paused | Sped up | Drawing a blur |
+| --- | --- | --- |
+| ![Paused](docs/images/paused.jpg) | ![Sped up](docs/images/speed.jpg) | ![Blur drawing](docs/images/blur.jpg) |
 
-![Replay after a cut: last five seconds, countdown and match meter](docs/screens/04-replay.jpg)
+### ③ Review and ④ Export
 
-Say *“hold”* while you wait for something slow. The dead air plays at 8× in the final video, and *“action”* brings it back to normal speed.
-
-![Hold: dead air runs at 8×](docs/screens/05-hold.jpg)
-
-### ④ Review: *here's your take*
-
-This is the finished video, with every retake already spliced in. Watch it and check the strip under the player. Your fluffed lines are kept as **outtakes** further down.
-
-### ⑤ Export: *that's a wrap*
-
-Download the MP4, generate captions, copy the post. See [Review, Export and Library](#review-export-and-library) for the details.
+See [Review](#review) and [Export, captions and chapters](#export-captions-and-chapters).
 
 ---
 
-## Push to talk: it never listens on its own
+## Push to talk
 
-Take1 hears commands **only while you hold the talk keys** (default <kbd>Ctrl</kbd> + <kbd>Shift</kbd>), or while you press and hold a **Hold to talk** button. Let go and Take1 acts. The rest of the time, everything you say is narration on the tape and is never interpreted.
+Take1 hears commands **only while you hold the talk keys** (default <kbd>Ctrl</kbd> + <kbd>Shift</kbd>) or press and hold a voice button. Let go and Take1 acts. The rest of the time, everything you say is part of the recording and is never interpreted.
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor You
     participant Keys as Ctrl + Shift
-    participant Ear as Voice engine (local)
-    participant Tape
+    participant Rec as Recorder
+    participant STT as Speech model (local)
     You->>Keys: press and hold
-    Keys->>Ear: start listening (pill shows "Listening")
-    You->>Ear: "redo that line"
+    Note over Rec: the 0.55 s before the keys<br/>is included, so a word you<br/>started early isn't clipped
+    You->>Rec: "oops, again"
     You->>Keys: let go
-    Ear->>Ear: Whisper → "redo that line"<br/>meaning → Cut
-    Ear->>Tape: mute the spoken command out of the audio
-    Ear->>Tape: Cut
+    Note over Rec: keeps listening 0.2 s<br/>for the end of the word
+    Rec->>STT: trimmed, levelled audio
+    STT-->>Rec: "oops again" → Cut
+    Rec->>Rec: mute the command in the recording<br/>(from when you started speaking to when you let go)
+    Rec->>Rec: Cut
 ```
 
-What happens around the keys:
-
-- **Your commands don't end up in the video.** The audio from the moment you pressed the keys until you let go is faded out of the final cut.
-- **Real shortcuts still work.** If a third key joins the combo (say <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd> to reopen a tab), the command is cancelled and nothing happens.
-- **Esc** cancels while listening.
+- **Your commands aren't in the video.** The audio from when you started the command until you let go is faded out. Narration you continue with afterwards is kept.
+- **Unclear?** If the fast model isn't sure, a second, more accurate model listens to the same audio before Take1 asks *"Did you mean…"*.
+- **Real shortcuts still work.** If a third key joins (say <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd>), nothing happens.
+- <kbd>Esc</kbd> cancels while listening.
 
 ### Browser vs desktop app
 
 | | `npm run dev` (browser) | `npm run app` (desktop) |
 | --- | --- | --- |
-| Talk keys | Only while the Take1 tab or the pill window is **focused** | **Anywhere**, even while you're typing in VS Code |
-| While you present another app | Press and hold the pill's voice button | Just hold the keys |
-| Pill visible in the recording? | Yes if you capture the whole screen, so pick a window | **Never**: it's excluded from capture |
+| Talk keys | Only while the Take1 tab or the floating controls window is **focused** | **Anywhere**, even while you type in your editor |
+| While you show another app | Press and hold the voice button in the floating controls | Just hold the keys |
+| Floating controls in the video? | Yes if you share the whole screen, so pick a window | **Never**: they're excluded from capture |
 
-Browsers only deliver key presses to the page that has focus, and that's the most common reason for “Ctrl + Shift doesn't work”. For a real demo, use the desktop app.
+Browsers only send key presses to the focused page, which is the usual reason for "Ctrl + Shift doesn't work". For real recordings, use the desktop app.
 
-### Why not Fn?
-
-On Windows laptops the <kbd>Fn</kbd> key is handled inside the keyboard itself and never reaches the operating system, so no app can see it (Wispr Flow can't either, which is why its Windows default is <kbd>Ctrl</kbd>+<kbd>Win</kbd>). In **Record → Settings → Talk key** you can pick:
-
-| Talk key | Good for |
-| --- | --- |
-| <kbd>Ctrl</kbd> + <kbd>Shift</kbd> | Default |
-| <kbd>Ctrl</kbd> + <kbd>Win</kbd> | Same as Wispr Flow on Windows |
-| <kbd>Alt</kbd> + <kbd>Shift</kbd> | If Ctrl + Shift switches your keyboard language |
-| <kbd>Right Ctrl</kbd> | One key, rarely used for anything else |
+**Why not Fn?** On Windows laptops the Fn key is handled inside the keyboard and never reaches the operating system, so no app can see it. In **Record → Settings** you can choose <kbd>Ctrl</kbd>+<kbd>Win</kbd> (Wispr Flow's Windows default), <kbd>Alt</kbd>+<kbd>Shift</kbd> or <kbd>Right Ctrl</kbd> instead.
 
 ---
 
 ## What you can say
 
-You don't have to memorise exact words. Take1 matches **meaning** with a small embedding model, and it also knows the usual mishearings: *“rap”* means wrap, *“cot”* means cut, *“hole”* means hold.
+You don't need exact words. Matching works on meaning and sound, so everyday phrasing and common mishearings ("rap" for wrap, "paws" for pause) still work.
 
-| Say | Or | What happens |
+| Say | Or | Does |
 | --- | --- | --- |
-| **Action** | “we're live”, “keep going” | Start rolling, or resume from Hold |
-| **Cut** | “redo that line”, “I messed up” | Rewind to the start of your sentence, replay 5 s, punch in |
-| **Back ten seconds** | “rewind five” | Rewind an exact number of seconds |
-| **Hold** | “speed this up”, “waiting for the build” | Dead air at 8× until *Action* |
-| **Zoom terminal** | “focus on the preview” | Ease into a named zoom spot |
-| **Wide** | “zoom out”, “full screen” | Back to the whole window |
-| **Redact that** | “blur that”, “that was a secret” | Blur the last 5 s on export |
-| **Mark it, live demo** | “new chapter: setup” | Drop a named chapter |
-| **Scratch that** | “never mind”, “undo” | Undo the last thing, or cancel a Cut while it replays |
-| **That's a wrap** | “we're done”, “stop recording” | Finish and open Review |
+| **Start recording** | "action", "we're live" | Start recording |
+| **Pause** | "hang on", "one sec", "wait" | Stop recording until you say Play |
+| **Play** | "continue", "carry on", "normal speed" | Carry on after Pause or Speed up, or skip the countdown |
+| **Cut** | "oops, again", "redo that line" | Remove the sentence you just said, replay 5 s, record again |
+| **Back ten seconds** | "rewind five" | Remove an exact number of seconds |
+| **Speed up** | "hold 3x", "fast forward 8x" | Waiting plays at 4× (or what you say) until Play |
+| **Zoom in** | "zoom terminal", "zoom here" | Zoom into a named spot, or pause and draw one |
+| **Zoom out** | "full screen" | Back to the whole window |
+| **Blur that** | "hide that", "that's private" | Pause and drag over what to blur |
+| **Unblur** | "stop blurring" | End a blur you left running |
+| **Chapter: live demo** | "new chapter setup", "next part" | Add a named chapter |
+| **Undo** | "never mind", "cancel" | Undo the last thing, or cancel a Cut during its replay |
+| **Stop recording** | "that's a wrap", "we're done" | Finish and open Review |
 
-If Take1 isn't sure what you meant, it doesn't guess. The pill asks *“Did you mean…”* and offers the closest options as buttons.
+The major actions (start, pause, play, cut, speed up, undo, chapter, stop) each have a short sound and an on-screen animation. Zoom and blur stay quiet, since they happen mid-sentence.
 
 ---
 
 ## Shortcuts
 
-Every action also has a button in the dock and the pill, plus a keyboard shortcut. In the desktop app these work from any app, and you can change them in **Record → Settings**.
+Every action also has a button and a keyboard shortcut. In the desktop app the shortcuts work from any app, and you can change them in **Record → Settings**.
 
 | Shortcut | Does |
 | --- | --- |
-| Hold <kbd>Ctrl</kbd>+<kbd>Shift</kbd> | Give a voice command, release to send |
-| <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>R</kbd> | Start recording / stop and wrap |
+| Hold <kbd>Ctrl</kbd>+<kbd>Shift</kbd> | Speak a command, release to send |
+| <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>R</kbd> | Start / stop recording |
+| <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>P</kbd> | Pause / play |
 | <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>C</kbd> | Cut (no voice needed) |
-| <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>H</kbd> | Hold / resume |
+| <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>H</kbd> | Speed up / normal speed |
 | <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>M</kbd> | Mute / unmute the mic |
-| <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>T</kbd> | Show / hide the floating pill |
+| <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>T</kbd> | Show / hide the floating controls |
 | <kbd>Esc</kbd> | Cancel a command while listening |
 
-**How it works** in the top bar opens the full manual at any time.
+**How it works** in the top bar opens the full guide at any time.
 
-![The How it works drawer](docs/screens/10-help.jpg)
-
----
-
-## The floating pill
-
-The pill is modelled on Wispr Flow's. It's a small capsule at the bottom of your screen, so you can direct the take without switching back to Take1. In the desktop app it's always on top, never takes focus away from the app you're demoing, and is hidden from the recording.
-
-It's quiet when nothing is happening. When you hover it, it opens into the full controls, and it reacts to every command with its own small animation:
-
-![Pill states: resting, open, rolling, listening, heard, unsure, rewinding, holding](docs/screens/pill-states.jpg)
-
-| Action | Animation |
-| --- | --- |
-| Action | The red tally dot lights with a ripple |
-| Cut | Two tape reels spin backwards while the timecode rolls back |
-| Hold | Chevrons stream forward in teal |
-| Zoom / Wide | Four corners close in on the centre (or open out) |
-| Redact | A bar slides over the lines |
-| Chapter | A bookmark ribbon drops onto the line |
-| Scratch that | An undo arrow sweeps round |
-| Wrap / punch-in | The clapperboard snaps shut |
+![The How it works drawer](docs/images/help.jpg)
 
 ---
 
-## How a Cut actually works
+## The floating controls
 
-This is the core of Take1, and it all happens in about a second while you're still talking.
+While you show another window, you direct the recording from small controls that float above everything.
+
+**Desktop app:** a column of round buttons on the right edge of the screen, like Wispr Flow's. It stays compact until you hover, never takes focus away from the app you're showing, and is hidden from the recording even when you capture the whole screen. Messages (what it heard, the replay, questions) appear to its left.
+
+![Desktop rail: rolling, hover, listening, paused, sped up](docs/images/floating-desktop.jpg)
+
+**Browser:** Chrome's Picture-in-Picture window can't be transparent or very narrow, so the same controls fill it as a compact dark remote with a status line and a message line.
+
+![Browser remote in each state](docs/images/floating-browser.jpg)
+
+---
+
+## How Cut works
+
+Everything happens in about a second, while you're still talking.
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor You
-    participant D as Director
-    participant A as Audio tape (PCM)
-    participant V as Video tape (H.264/VP9 chunks)
-    participant R as Replay
-    You->>D: "cut" (keys released)
-    D->>A: where did this sentence start?
-    A-->>D: last pause ≥ 0.38 s before you said "cut"
-    D->>A: nudge to the quietest 10 ms nearby
-    D->>V: drop every chunk after that point
-    D->>A: drop the audio after that point
-    Note over D: the dropped part is kept as an outtake
-    D->>R: decode the last 5 s into frames
-    R-->>You: replay with sound + countdown 3, 2, 1
-    D->>V: next frame is a forced keyframe
-    You->>D: say the sentence again
+    participant R as Recorder
+    participant A as Audio buffer (PCM)
+    participant V as Encoded video
+    participant P as Replay
+    You->>R: "cut" (keys released)
+    R->>A: where did this sentence start?
+    A-->>R: most recent pause ≥ 0.7 s (≤ 14 s back),<br/>else the last pause ≥ 0.38 s
+    R->>A: move to the quietest 10 ms nearby
+    R->>V: remove every frame after that point
+    R->>A: remove the audio after that point
+    Note over R: the removed part becomes an outtake (restorable with "undo")
+    R->>P: decode the 5 s before the cut
+    P-->>You: replay with sound, then 3, 2, 1
+    R->>V: first new frame is a keyframe
+    You->>R: say the sentence again
 ```
 
-The details that make the splice clean:
+- **Finding the sentence.** Breaths inside a sentence are usually 0.2–0.4 s; gaps between sentences are longer. Take1 prefers the most recent long pause and falls back to a short one. If it can't find a sentence at all (muted mic, noisy room), it **goes back 5 s** rather than guessing big, and says so.
+- **Inaudible joins.** The cut point moves to the quietest 10 ms within 150 ms.
+- **No re-encoding.** The first frame after a cut, pause or speed change is a keyframe, so the recording can be joined and copied straight into the MP4.
+- **Nothing is lost.** Say *undo* during the replay and the removed sentence comes back.
 
-- **Finding the sentence.** Take1 keeps a running loudness envelope of the mic. It walks back from the moment you started the command, skips the pause right before “cut”, and stops at the last silence of at least 0.38 s. That silence is where your sentence began. If it can't find one (muted mic, noisy room), it **steps back 5 s** instead of guessing big, and tells you so.
-- **Quietest point.** The cut is nudged to the quietest 10 ms within 150 ms, so the join can't be heard.
-- **Keyframe at punch-in.** The first frame after the cut is forced to be a keyframe, so the video can be joined without re-encoding.
-- **Nothing is thrown away.** The removed piece (video chunks, audio, thumbnails, chapters, zooms) becomes an outtake. Say *“scratch that”* during the replay and all of it is restored.
-- **Cut again during the replay.** Each extra *cut* goes back one more sentence.
-
-### The recorder's states
+### Recorder states
 
 ```mermaid
 stateDiagram-v2
     [*] --> idle
-    idle --> rolling: Action / Record
-    rolling --> hold: Hold
-    hold --> rolling: Action
+    idle --> rolling: Start recording
+    rolling --> paused: Pause / Blur that / Zoom in
+    paused --> rolling: Play
+    rolling --> sped_up: Speed up (N×)
+    sped_up --> rolling: Play
     rolling --> rewinding: Cut
-    hold --> rewinding: Cut
-    rewinding --> preroll: rewind animation done
-    preroll --> rewinding: Cut again (one more line)
-    preroll --> rolling: countdown ends / Action
-    preroll --> rolling: Scratch that (cut cancelled)
-    rolling --> wrapped: That's a wrap
-    hold --> wrapped: That's a wrap
-    wrapped --> [*]
+    sped_up --> rewinding: Cut
+    paused --> rewinding: Cut
+    rewinding --> replay: rewind animation done
+    replay --> rewinding: Cut again
+    replay --> rolling: countdown ends / Play / Undo
+    replay --> paused: Pause
+    rolling --> finished: Stop recording
+    sped_up --> finished: Stop recording
+    paused --> finished: Stop recording
+    finished --> [*]
 ```
 
 ---
 
-## Review, Export and Library
+## Review
 
-### Review: *“here's your take”*
+The finished video, with every redone sentence already removed. The strip under the player marks the joins (orange), sped-up parts (green) and blurs (lavender). Blurs are previewed as plain blur, exactly as they'll look; you can move or resize the box with **Adjust**.
 
-> Earlier builds called this screen **Dailies**, the film-set word for watching the day's footage. It's now just **Review**.
+![Review: the finished recording, stats, transcript, chapters and blurs](docs/images/review.jpg)
 
-This is the finished video, with retakes already spliced in. Under the player is a strip of thumbnails with markers:
-
-| Marker | Meaning |
-| --- | --- |
-| 🟧 orange tick | **Splice**: where a retake was joined |
-| 🟩 green band | **Hold**: dead air played at 8× |
-| 🟪 lavender stripe | **Redaction**: will be blurred on export (you can adjust the box) |
-| ⬜ white tick | **Chapter** |
-
-The stats panel shows what Take1 saved you: retakes done live, seconds of waiting squeezed out, and minutes in an editor (zero).
-
-![Review: the finished cut and the stats panel](docs/screens/06-review.jpg)
-
-Below the player, every line you retook is an **outtake** you can play back, labelled with what you said.
-
-![Review: timeline markers and outtakes](docs/screens/07-review-timeline.jpg)
-
-### Export: *“that's a wrap”*
-
-| Card | What you get |
-| --- | --- |
-| **Final cut** | MP4 with speech levelled to about −16 LUFS (YouTube's loudness). Re-encoded only if something has to be burned in; otherwise the tape is copied as-is, so it's instant and lossless. |
-| **Captions** | Generate on your device, download `.srt` / `.vtt`, or **burn them into the video** |
-| **Submission post** | Markdown write-up with title, transcript summary and chapters |
-| **Social post** | Short post for X / LinkedIn |
-| **Chapters** | YouTube-ready chapter list |
-| **Blooper reel** | Every outtake back to back, labelled by take |
-
-Edit the **title** at the top and it's used for file names and the Library.
-
-![Export: final cut with burned-in captions](docs/screens/08-export.jpg)
-
-### Library: every take you've exported
-
-Every export is saved automatically in the **Library** (top bar) on this computer, in the browser's IndexedDB. You can play, rename, re-download (MP4, `.srt`, `.vtt`) or delete takes there. Re-exporting the same take, for example after burning in captions, updates its entry instead of adding a duplicate.
-
-![Library](docs/screens/09-library.jpg)
-
-> The browser and the desktop app keep **separate** libraries, because they are different “sites” as far as storage goes.
+- **Sentences you redid** are listed below the player and can be played back. None of them are in the video.
+- **Transcribe** runs Whisper on your computer and gives you a clickable transcript, captions and suggested chapters.
+- **Chapters:** add one at the playhead, rename, remove, or *Suggest from transcript*. A note tells you if YouTube wouldn't accept them (it needs at least three, each at least 10 s long).
 
 ---
 
-## Captions
+## Export, captions and chapters
 
-Captions are **on demand**. Nothing is transcribed until you ask, so recording stays light.
+![Export: the MP4, ways to send it, captions and chapters](docs/images/export.jpg)
+
+| | |
+| --- | --- |
+| **MP4** | Speech levelled to about −16 LUFS. Chapters are embedded (VLC, mpv and ffmpeg show them). It's only re-encoded if something has to be drawn in (blurs, captions); otherwise the recording is copied as-is, so export is fast and lossless. |
+| **Captions** | Generated on your computer. Download `.srt` / `.vtt`, or style them and draw them into the video (below). |
+| **Chapters** | A YouTube-ready list (`0:00 Intro`, …) with a Copy button. They also go into the YouTube description automatically when you upload from Take1. |
+| **Send it somewhere** | Save to a folder you pick once (optionally every export, automatically), upload to YouTube or Google Drive, or use your system's share sheet. |
+
+How captions are made:
 
 ```mermaid
 flowchart LR
-    T[Final cut audio] --> S[Spoken commands<br/>already muted]
-    S --> W["Whisper base.en<br/>(on your device, Web Worker)"]
-    W --> L[Timed lines]
+    T[Recording audio] --> S[Spoken commands<br/>already muted]
+    S --> G[Split into phrases<br/>at pauses]
+    G --> W["Whisper base.en<br/>per phrase, in a worker"]
+    W --> L[Timed lines<br/>+ a time for every word]
     L --> C[Caption cues<br/>2 lines × ~42 chars]
     C --> F1[.srt / .vtt]
-    C --> F2[Burned into the MP4]
-    L --> P[Transcript in Review,<br/>post + chapters in Export]
+    L --> ST[Your caption style] --> F2[Drawn into the MP4]
+    L --> CH[Suggested chapters]
 ```
 
-- Click **Transcribe** in Review or **Generate captions** in Export. The first time, the caption model downloads once (about 80 MB) with a progress bar.
-- Turn on **Burn captions into the video** and the MP4 is re-rendered with them drawn in.
-- If the take has no speech (mic muted, silent room), Take1 tells you so instead of producing empty captions.
+Splitting at pauses first means every line has honest start and end times, and a quiet microphone still transcribes. If the recording has no audible audio, Take1 says so instead of producing empty captions. Every word also gets its own time (Whisper's word timestamps, or the loudness of the phrase when those aren't available), which is what lets styled captions follow your voice word by word.
+
+### Caption styles
+
+Below the cards on the Export screen, **Caption style** shows your video with the captions playing over it, drawn exactly as they will be drawn into the MP4.
+
+- **Styles**: Classic, Bold pop, One word, Highlight, Karaoke, Blend (the text inverts the picture behind it), Neon and Marker.
+- **Place it** by dragging the caption on the picture (it snaps to the centre), or pick Top, Middle or Bottom.
+- **Words at a time**: 1, 2, 3, or a full line.
+- **Animation**: pop, rise, fade, bounce, or word by word.
+- **Spoken word**: change its colour, put a box or a marker stroke behind it, fill words as they're spoken (karaoke), or make it grow.
+- **Font, size, text and highlight colours**, plus UPPERCASE, outline, shadow, glow, background and blend.
+
+*Draw into the video* re-exports the MP4 with that style; *Remove from video* goes back to the clean file. Your last style is remembered. The fonts (Figtree, Poppins, Montserrat, Anton, Bebas Neue, Permanent Marker; SIL Open Font License) ship with the app, so drawing captions in never touches the network.
+
+---
+
+## Uploading to YouTube and Google Drive
+
+There are three ways, from least to most setup:
+
+- **By hand (no setup).** Press *Upload* without Google connected and choose *Save the file and open YouTube* (or Drive). Take1 saves the MP4, puts the title and description (with chapters) on your clipboard, and opens the upload page; drag the file in.
+- **Connect your own Google account (once, ~5 minutes).** Uploads go straight from Take1 with chapters and captions. Nothing goes through a Take1 server (there isn't one).
+  1. Enable the [YouTube Data API v3](https://console.cloud.google.com/apis/library/youtube.googleapis.com) and the [Google Drive API](https://console.cloud.google.com/apis/library/drive.googleapis.com) in a Google Cloud project.
+  2. Set up the [consent screen](https://console.cloud.google.com/auth/overview) (External) and add your Google account as a **test user** under *Audience*.
+  3. [Create an OAuth client](https://console.cloud.google.com/auth/clients/create):
+     - Browser (`npm run dev`): type **Web application**, with `http://localhost:5173` under *Authorised JavaScript origins*.
+     - Desktop app (`npm run app`): type **Desktop app**. Copy its client secret too.
+  4. In Take1: **Export → Send it somewhere → Connect Google**, and paste the client ID (and the secret for the desktop app).
+- **Build a client into your copy.** Put the client ID(s) in a `.env` file (see [`.env.example`](.env.example)). Everyone using that copy just signs in with Google.
+
+YouTube keeps videos uploaded through a personal, unaudited Google project **private**, whatever visibility you pick, until the project passes [YouTube's API audit](https://support.google.com/youtube/contact/yt_api_form). You can change the visibility in YouTube Studio afterwards.
+
+The first upload asks you to sign in; after that your account is remembered. In the browser, sign-in uses Google Identity Services. In the desktop app it opens your normal browser, and the refresh token is stored encrypted by the operating system (`safeStorage`). YouTube uploads can be private, unlisted or public, include the chapters in the description, and attach the captions as a subtitle track. Drive uploads put the MP4 (and the `.srt`) in your Drive and give you a link.
+
+---
+
+## Library
+
+Every export is saved on this computer. The **Library** badge appears only when there's a recording you haven't looked at yet. You can play, rename, re-download (MP4, `.srt`, `.vtt`) and delete recordings.
+
+![Library](docs/images/library.jpg)
+
+Recordings live in the browser's IndexedDB in two stores: `takes` holds the small records (title, duration, transcript, chapters, thumbnail) that the Library lists, and `videos` holds the MP4 files, read only when you play or download one. Listing the Library never loads a video into memory. Libraries from older versions are migrated automatically. The browser and the desktop app keep separate libraries.
 
 ---
 
@@ -359,94 +340,93 @@ flowchart LR
 ```mermaid
 flowchart TB
     subgraph Desktop["Electron shell (npm run app)"]
-        HOOK["uiohook-napi<br/>hold-to-talk anywhere"]
-        GS["globalShortcut<br/>Ctrl+Alt+R/C/H/M/T"]
+        HOOK["uiohook-napi<br/>talk keys anywhere"]
+        GS["globalShortcut"]
         PICK["desktopCapturer<br/>window picker"]
-        PILLW["Pill window<br/>transparent · on top ·<br/>hidden from capture"]
+        RAILW["Floating controls window<br/>transparent · on top · not captured"]
+        GAUTH["Google sign-in<br/>loopback + PKCE"]
     end
 
-    subgraph UI["React UI"]
-        STEPS["Setup → Window → Record →<br/>Review → Export · Library"]
-        PILL["Pill"]
-        STORE[("store<br/>useSyncExternalStore")]
+    subgraph Page["Page (React)"]
+        UI["Setup → Record → Review → Export · Library"]
+        FC["Floating controls"]
+        STORE[("store<br/>per-field subscriptions")]
+        REC["Recorder<br/>state machine + edit list"]
+        AUD["Audio engine<br/>AudioWorklet → PCM buffer"]
     end
 
-    subgraph Engine["Recording engine"]
-        DIR["Director<br/>state machine + edit list"]
-        COMP["Compositor<br/>zoom · camera · 1080p canvas"]
-        VT["Video tape<br/>WebCodecs encoder"]
-        AT["Audio tape<br/>AudioWorklet PCM · VAD"]
-        RP["Replay<br/>decode last 5 s"]
-        EXP["Exporter<br/>render · loudness · AAC/Opus"]
-        MUX["MP4 muxer<br/>zero dependencies"]
+    subgraph Workers["Workers (off the UI thread)"]
+        COMP["compositor.worker<br/>OffscreenCanvas: zoom, camera,<br/>VideoEncoder, thumbnails, screen match"]
+        EXP["export.worker<br/>decode/draw/re-encode, loudness,<br/>AAC/Opus, interleaved MP4 + chapters"]
+        STT["stt.worker<br/>Whisper tiny.en / base.en,<br/>MiniLM embeddings"]
+        TICK["ticker<br/>30 fps clock that survives hidden tabs"]
     end
 
-    subgraph Voice["Voice (Web Worker, local)"]
-        WT["Whisper tiny.en<br/>commands"]
-        WB["Whisper base.en<br/>captions"]
-        EMB["MiniLM embeddings<br/>meaning match"]
-    end
+    DB[("IndexedDB<br/>takes · videos")]
 
-    LIB[("IndexedDB<br/>Library")]
-
-    HOOK & GS -->|IPC| DIR
+    HOOK & GS -->|IPC| REC
     PICK --> COMP
-    STEPS <--> STORE
-    PILL <--> STORE
-    PILL -. renders in .-> PILLW
-    DIR <--> STORE
-    COMP --> VT
-    DIR --> VT & AT & RP
-    AT --> WT --> EMB --> DIR
-    DIR --> EXP --> MUX --> LIB
-    AT --> WB --> EXP
+    UI <--> STORE
+    FC <--> STORE
+    FC -. renders in .-> RAILW
+    REC <--> STORE
+    TICK --> REC
+    REC -->|"frames: transferred streams"| COMP
+    COMP -->|encoded chunks · preview bitmaps| REC
+    AUD --> REC
+    REC -->|command audio| STT
+    REC -->|export job| EXP
+    EXP --> DB
+    GAUTH -. tokens .-> UI
 ```
 
-The **Director** is the single place where everything happens. Buttons, hotkeys, the pill and voice all end up calling `director.run(command)`. It owns the two tapes (video chunks and raw PCM audio) plus an edit list of holds, redactions, chapters, zooms and muted command audio. It writes its state into one small store, which every screen reads.
+The **Recorder** (`src/engine/recorder.ts`) is the one place where actions happen: buttons, shortcuts, the floating controls and voice all call `recorder.run(command)`. It owns the encoded video chunks, the raw PCM audio and an edit list (sped-up ranges, blurs, chapters, zooms, muted commands), and publishes state to a small store. Screens subscribe to individual fields, so the UI only re-renders when something it shows changes.
+
+The page never draws or encodes video. Window and camera frames go to `compositor.worker` as transferred `ReadableStream<VideoFrame>`s; the worker composites on an `OffscreenCanvas`, encodes, and sends back chunks plus a downscaled preview bitmap. Exports run in `export.worker`, and speech runs in `stt.worker`.
 
 ---
 
-## The hard parts
+## Engineering notes
 
 <details>
-<summary><b>Cutting compressed video without re-encoding</b></summary>
+<summary><b>Editing compressed video without re-encoding</b></summary>
 
-The video tape is a list of encoded chunks, not frames. You can only start playback from a keyframe, so Take1 forces one at every punch-in, after every hold, and once a second otherwise. A cut drops the chunks after the splice point, and the next chunk recorded is guaranteed to be a keyframe. The result can be stream-copied straight into the MP4.
+The recording is a list of encoded chunks. A keyframe is forced after every cut, pause and speed change, and once a second otherwise. A cut removes the chunks after the cut point, and the next chunk is guaranteed to be a keyframe, so the result can be copied straight into the MP4.
 
 </details>
 
 <details>
-<summary><b>Hold without a speed-ramp editor</b></summary>
+<summary><b>Speed up without an editor</b></summary>
 
-During a hold the encoder keeps running, but the tape's clock advances at 1/8 speed, so the wait plays at 8× in the final video. Saying *“hold”* takes a moment, so the silence just before the command is trimmed back off the tape and a keyframe is forced at the join. That way the speed change starts exactly where you stopped talking.
-
-</details>
-
-<details>
-<summary><b>An MP4 muxer from scratch</b></summary>
-
-`src/engine/mp4.ts` writes `ftyp/moov/mdat` with `avcC` (H.264) or `vpcC` (VP9) video and `esds` (AAC) or `dOps` (Opus) audio, and moves the index to the front (faststart) so the file plays straight away in a browser. That's around 300 lines with no dependencies.
+While sped up, encoding continues at the normal frame rate but the output clock advances at 1/N speed, so N seconds of waiting become one. The moment of silence before "speed up" is trimmed and a keyframe is forced at the join.
 
 </details>
 
 <details>
-<summary><b>Listening that doesn't die after 40 seconds</b></summary>
+<summary><b>An interleaved MP4 writer</b></summary>
 
-The browser's built-in speech recognition times out and drops words, which is why “wrap” used to come back as “rap”. Take1 records the command audio itself, from a tap on the same AudioWorklet that feeds the tape, and runs Whisper locally in a Web Worker. A repair table fixes known mishearings, and an embedding model matches meaning rather than exact words.
-
-</details>
-
-<details>
-<summary><b>Recording keeps going when the tab is hidden</b></summary>
-
-Browsers throttle timers in background tabs, which would make the frame rate drop to 1 fps while you present another window. Take1 drives frames from a Web Worker ticker, and the desktop app turns background throttling off.
+`src/engine/mp4.ts` writes `ftyp/moov/mdat` with `avcC` (H.264) or `vpcC` (VP9) video, `esds` (AAC) or `dOps` (Opus) audio, and the index first, so it plays before it has fully downloaded. Audio and video are interleaved in ~0.5 s runs (one chunk each per run, with matching `stsc`/`stco` tables), so streaming players read the file front to back. Chapters go in a Nero `chpl` box. Past 4 GB it switches to 64-bit offsets (`co64`) and a 64-bit media size.
 
 </details>
 
 <details>
-<summary><b>Your commands are muted out of the video</b></summary>
+<summary><b>Recognising short commands reliably</b></summary>
 
-Every command session marks a range on the tape. On export those ranges are faded to silence with 10 ms fades, so the audience never hears “cut” or “that's a wrap”.
+One-syllable commands are easy to clip. Command audio includes the 0.55 s before the keys went down and 0.2 s after they come up, is trimmed to the speech, raised to a healthy level and padded before Whisper sees it. Parsing works on tokens: numbers ("3x", "twenty five") become values, and each word is matched exactly or by its Metaphone key (`src/voice/phonetic.ts`), so mishearings nobody listed still match. Sentence embeddings (MiniLM) cover paraphrases. If the fast model's answer doesn't match a command, the more accurate model gets a second listen before you're asked.
+
+</details>
+
+<details>
+<summary><b>Recording keeps going while the tab is hidden</b></summary>
+
+Browsers throttle timers in background tabs. The frame clock runs in a dedicated worker, which isn't throttled, and the desktop app also turns background throttling off.
+
+</details>
+
+<details>
+<summary><b>Exports can't hang</b></summary>
+
+Exports report progress from the worker. If nothing moves for 30 s, the export fails with a message instead of sitting on a frozen progress ring. Starting a new recording always clears the previous one completely.
 
 </details>
 
@@ -457,72 +437,65 @@ Every command session marks a range on the tape. On export those ranges are fade
 ```
 take1/
 ├─ electron/
-│  ├─ main.cjs          desktop shell: talk-key hook, global shortcuts, pill window, picker
-│  └─ preload.cjs       the small, safe bridge the UI talks to (window.take1Native)
+│  ├─ main.cjs              desktop shell: talk-key hook, shortcuts, floating window, picker, Google sign-in
+│  └─ preload.cjs           the small bridge the page talks to (window.take1Native)
 ├─ src/
-│  ├─ App.tsx           top bar, steps, Help + Library, pill portal
+│  ├─ App.tsx               top bar with the four steps, Help, Library, floating controls
 │  ├─ screens/
-│  │  ├─ GreenRoom.tsx  ① Setup: mic, push-to-talk practice
-│  │  ├─ Stage.tsx      ② Window: source, camera, zoom spots
-│  │  ├─ Console.tsx    ③ Record: monitor, dock, cheat sheet, settings
-│  │  ├─ Dailies.tsx    ④ Review: player, timeline, outtakes, transcript
-│  │  ├─ Wrap.tsx       ⑤ Export: MP4, captions, posts, blooper reel
-│  │  └─ Library.tsx    every exported take
+│  │  ├─ Setup.tsx          mic, window, camera, zoom spots, push-to-talk practice (first use)
+│  │  ├─ Record.tsx         live picture, dock, draw panel, commands, settings
+│  │  ├─ Review.tsx         player, timeline, redone sentences, transcript, chapters, blurs
+│  │  ├─ Export.tsx         MP4, captions, chapters, save / YouTube / Drive / share
+│  │  └─ Library.tsx        every exported recording
 │  ├─ engine/
-│  │  ├─ director.ts    the state machine: roll, cut, hold, punch-in, wrap, export
-│  │  ├─ audio.ts       AudioWorklet PCM tape, VAD, sentence finder, splice points
-│  │  ├─ videoTape.ts   WebCodecs encoder + chunk tape with forced keyframes
-│  │  ├─ compositor.ts  canvas: zoom, camera bubble, redaction blur
-│  │  ├─ replay.ts      decode the last N seconds for the punch-in replay
-│  │  ├─ exporter.ts    re-render, caption burn-in, loudness, audio encode
-│  │  ├─ mp4.ts         zero-dependency MP4 muxer
-│  │  ├─ snapshots.ts   thumbnails for the timeline and match meter
-│  │  └─ ticker.ts      worker clock that survives hidden tabs
+│  │  ├─ recorder.ts        the state machine: record, cut, pause, speed, blur, zoom, finish, export
+│  │  ├─ audio.ts           AudioWorklet capture, PCM buffer, sentence finder, quiet splice points
+│  │  ├─ compositor.ts      page-side handle for the compositor worker
+│  │  ├─ compositor.worker.ts  compositing, encoding, thumbnails, screen matching
+│  │  ├─ video.ts           encoded chunk list, keyframe rules, decoding runs
+│  │  ├─ export.ts          page-side handle for the export worker
+│  │  ├─ export.worker.ts   render, captions, blur, loudness, audio encode, MP4
+│  │  ├─ mp4.ts             interleaved MP4 writer with chapters
+│  │  ├─ replay.ts          decode the seconds before a cut
+│  │  ├─ snapshots.ts       thumbnails for the timeline and outtakes
+│  │  └─ ticker.ts          worker clock
 │  ├─ voice/
-│  │  ├─ stt.worker.ts  Whisper + MiniLM in a Web Worker
-│  │  ├─ stt.ts         worker client, model progress
-│  │  ├─ intent.ts      commands, mishearing repairs, meaning match, call sheet
-│  │  └─ recognizer.ts  browser speech fallback
-│  ├─ features/packet.ts  captions, .srt/.vtt, chapters, posts, title guess
-│  ├─ lib/              store, Library (IndexedDB), native bridge, time
-│  └─ ui/               Pill, Help, components + per-action animations, styles, sounds
-└─ docs/screens/        the images in this README
+│  │  ├─ stt.worker.ts      Whisper + MiniLM, phrase splitting for transcripts
+│  │  ├─ stt.ts             worker client, command audio preparation
+│  │  ├─ intent.ts          commands, token parsing, call sheet
+│  │  └─ phonetic.ts        Metaphone keys for sound-alike matching
+│  ├─ lib/                  store, Library storage, transcript/captions/chapters, sharing, desktop bridge
+│  └─ ui/                   floating controls, Help, components, sounds, styles
+└─ docs/images/             the pictures in this README
 ```
-
-> `src/ui/Hud.tsx` and `src/voice/grammar.ts` may still exist in older checkouts as empty stubs from an earlier build. Nothing imports them, so they're safe to delete.
 
 ---
 
 ## Troubleshooting
 
-**Ctrl + Shift does nothing.**
-In the browser, keys only reach the page when the Take1 tab (or the pill window) is focused. Click the Take1 tab first, or use the **Hold to talk** button, or run `npm run app`. If your keyboard layout switches languages on Ctrl + Shift, choose another talk key in **Record → Settings**. In Setup, the keycaps light up as you press them, which is a quick way to check the keys are arriving.
+**Ctrl + Shift does nothing.** In the browser, keys only reach the page while the Take1 tab (or the floating controls window) is focused. Use the voice button, or run `npm run app`. If Ctrl + Shift switches your keyboard language, pick another talk key in **Record → Settings**. On the first-use Setup screen the keycaps light up as you press them, which shows whether the keys are arriving.
 
-**“Didn't hear a sentence, so I went back 5 s.”**
-The mic was muted or picked up nothing clear, so Take1 stepped back a safe 5 s instead of guessing. Say *cut* again to go back further, or *scratch that* to undo.
+**It took a few tries to hear me.** Speak as you press, not after. Take1 includes the moment before the keys, so starting slightly early is fine. If it's still unsure, it shows the closest options to tap.
 
-**Captions say “No speech found”.**
-The final cut has no audible speech. Check the mic picked the right input in Setup.
+**"Didn't hear a sentence, so I went back 5 s."** The mic picked up nothing clear. Say *cut* again to go back further, or *undo*.
 
-**The Library is empty but I exported something.**
-Takes are saved per browser and per app. A take exported in Chrome won't appear in the desktop app, or the other way round.
+**Transcription says there's no audible audio.** The recording itself is silent. Check that Setup shows the right microphone and that the bars move.
 
-**The page shows old screens after updating.**
-Stop the dev server and start it again with `npm run dev`.
+**Upload asks how to upload.** Google isn't connected yet: upload by hand, or connect it once ([how](#uploading-to-youtube-and-google-drive)).
+
+**“Speech model couldn’t load”.** The first time, the model downloads from huggingface.co; check the connection and press *Try again* (Setup or Record → Settings). It's cached after that.
+
+**The page shows old screens after updating.** Stop the dev server and run `npm run dev` again.
 
 ---
 
 ## Known limits
 
-- **Chrome or Edge only.** Take1 needs WebCodecs and `MediaStreamTrackProcessor`. Firefox and Safari aren't supported yet.
-- **One take, one session.** After you close the app the Library keeps the exported MP4, but the editable tape (outtakes, re-exporting with different captions) is gone.
-- **The Fn key can't be used** on Windows (see [Why not Fn?](#why-not-fn)).
-- **English voice models.** Commands and captions use the `.en` Whisper models.
+- **Chrome or Edge only.** WebCodecs, `MediaStreamTrackProcessor` and transferable streams aren't all available in Firefox or Safari yet.
+- **A recording is editable until you start the next one.** The Library keeps the exported MP4, but redoing chapters or blurs on an old recording isn't possible yet.
+- **English.** Commands and captions use the English Whisper models.
+- **Fn can't be the talk key** on Windows (see [Push to talk](#push-to-talk)).
 
 ---
 
-## Built by voice
-
-Take1 was made for the **Wispr Flow #NoHandsChallenge**: the ideas, the specs, the bug reports and the design feedback were all spoken through Wispr Flow. It's fitting for a tool whose whole point is that you shouldn't have to reach for the mouse to fix a mistake.
-
-*Roll sound. Roll camera. Action.* 🎬
+Take1 was built for the Wispr Flow #NoHandsChallenge. The ideas, specs, bug reports and design feedback were spoken, not typed.
