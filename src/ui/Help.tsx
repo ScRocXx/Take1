@@ -10,7 +10,7 @@ const SHORTCUT_ROWS: [string, string][] = [
   ['cut', 'Cut: remove the last sentence, no voice needed'],
   ['hold', 'Speed up the waiting / back to normal speed'],
   ['mic', 'Mute / unmute your mic'],
-  ['pill', 'Show / hide the floating controls'],
+  ['pill', 'Show / hide the floating bar'],
 ];
 
 /** The manual, one click away ("How it works" in the top bar). */
@@ -83,9 +83,9 @@ export function Help() {
           </div>
           <p className="muted small">
             {native
-              ? 'Desktop app: the keys work from any app, even while Take1 is hidden.'
-              : 'Browser: the keys only work while the Take1 tab or the floating controls window is focused. While you show another window, press and hold the voice button in the floating controls. The desktop app (npm run app) makes the keys work everywhere.'}{' '}
-            Fn can’t be used: on Windows laptops it never reaches the operating system. You can change the talk key in Record → Settings.
+              ? 'Desktop app: the keys work from any app, even while Take1 is hidden. You can also turn on the wake phrase in Settings and just say “Take one, cut”.'
+              : 'Browser: the keys only work while the Take1 tab or the floating bar is focused. While you show another window, press and hold the voice button on the floating bar. The desktop app (Get the app, top right) makes the keys work everywhere.'}{' '}
+            Fn can’t be used: on Windows laptops it never reaches the operating system. You can change the talk key in {native ? 'Settings' : 'Record → Settings'}.
           </p>
         </section>
 

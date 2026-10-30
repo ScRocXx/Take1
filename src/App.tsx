@@ -4,14 +4,19 @@ import { recorder, keyHandler, keyUpHandler, releaseKeys } from './engine/record
 import { native } from './lib/native';
 import { library } from './lib/library';
 import { useStore, store, type Screen } from './lib/store';
-import { Keys, Wordmark } from './ui/components';
+import { Icon, Keys, Wordmark } from './ui/components';
 import { FloatingControls } from './ui/FloatingControls';
+import { FxOverlay } from './ui/FxOverlay';
+import { SettingsScreen } from './screens/Settings';
 import { Help } from './ui/Help';
 import { Setup, Welcome } from './screens/Setup';
 import { Record } from './screens/Record';
 import { Review } from './screens/Review';
 import { Export } from './screens/Export';
 import { Library } from './screens/Library';
+
+/** The Windows installer, built by the GitHub workflow (.github/workflows/desktop.yml). */
+const DOWNLOAD_URL: string = ((import.meta as any).env?.VITE_DOWNLOAD_URL as string) || 'https://github.com/ScRocXx/Take1/releases/latest/download/Take1-Setup.exe';
 
 const STEPS: { key: Screen; label: string }[] = [
   { key: 'setup', label: 'Setup' },
@@ -89,9 +94,21 @@ export function App() {
           <button className="nav-link" onClick={() => store.set({ helpOpen: true })}>
             How it works
           </button>
-          <span className="nav-hint">
-            Hold <Keys accel={accel} /> to talk
-          </span>
+          {native ? (
+            <>
+              <span className="nav-hint">
+                Hold <Keys accel={accel} /> to talk
+              </span>
+              <button className={`nav-link ${screen === 'settings' ? 'on' : ''}`} disabled={recording} onClick={() => store.set({ screen: 'settings' })}>
+                Settings
+              </button>
+            </>
+          ) : (
+            <a className="nav-get" href={DOWNLOAD_URL} title="Take1 for Windows: commands from any app, a tiny floating bar, never in your video">
+              {Icon.down}
+              Get the app
+            </a>
+          )}
           {recording && (
             <span className={`status live ph-${phase}`}>
               <span className={`dot dot-${phase}`} />
@@ -106,6 +123,7 @@ export function App() {
       {screen === 'review' && <Review />}
       {screen === 'export' && <Export />}
       {screen === 'library' && <Library />}
+      {screen === 'settings' && <SettingsScreen />}
       {helpOpen && <Help />}
       {toast && (
         <div className={`toast t-${toast.tone}`} key={toast.id}>
@@ -113,6 +131,7 @@ export function App() {
         </div>
       )}
       {floating && recorder.pillRoot && createPortal(<FloatingControls layout={(window as any).__fcLayout ?? (native ? 'rail' : 'remote')} />, recorder.pillRoot)}
+      {floating && recorder.fxRoot && createPortal(<FxOverlay />, recorder.fxRoot)}
     </div>
   );
 }

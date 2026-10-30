@@ -69,6 +69,9 @@ interface Session {
   endOut?: number | null;
 }
 
+/** "Take one, …" as Whisper tends to write it (take 1, take won, okay take one…) */
+const WAKE = /^(?:(?:ok|okay|hey)\s+)?(?:take|tape|taik|tech|taken|takes)\s*(?:one|1|won|wan|on)\b\s*(.*)$/;
+
 const FPS = 30;
 const FD = 1 / FPS;
 
@@ -82,6 +85,9 @@ export class Recorder {
   cameraStream: MediaStream | null = null;
   pillWin: Window | null = null;
   pillRoot: HTMLElement | null = null;
+  /** desktop: the click-through overlay across the screen (command animations, replay, countdown) */
+  fxWin: Window | null = null;
+  fxRoot: HTMLElement | null = null;
   onName: ((name: string) => void) | null = null;
   replay: Replay | null = null;
 
@@ -103,6 +109,10 @@ export class Recorder {
   private tickN = 0;
   private actionN = 0;
   private session: Session | null = null;
+  /** wake phrase: the phrase being heard right now, and "Take one" heard on its own */
+  private wake: { onset: number; startOut: number | null; buf: Float32Array[]; lastLoud: number; long: boolean } | null = null;
+  private wakeArmed: { until: number; startOut: number | null; id: number } | null = null;
+  private wakeBusy = false;
   /** the last second of mic audio, so a command spoken a beat before the keys still counts */
   private ring: { t: number; s: Float32Array }[] = [];
 
@@ -128,6 +138,8 @@ export class Recorder {
         store.set({ shortcuts: { ...DEFAULT_SHORTCUTS, ...rest }, ...(talk ? { talkKey: talk } : {}) });
       });
       native.talkStatus().then((ok) => store.set({ talkHook: ok }));
+      native.onPillPlaced?.((p) => store.set({ pillPlace: p }));
+      native.pillWhere?.().then((p) => p && store.set({ pillPlace: p }));
     }
   }
 
@@ -322,31 +334,11 @@ export class Recorder {
         toast('Floating controls need Chrome or Edge 116+. The desktop app has them everywhere.', 'muted');
         return false;
       }
-      // Chrome won't make it narrower than ~240 px; tall enough for the whole column
-      w = await dpip.requestWindow({ width: 280, height: 440 });
+      // as small as Chrome allows: the window is just the bar (it won't go under ~240 × 50)
+      w = await dpip.requestWindow({ width: 344, height: 56 });
     }
     if (!w) return false;
-    [...document.styleSheets].forEach((ss) => {
-      try {
-        const css = [...ss.cssRules].map((r) => r.cssText).join('\n');
-        const st = w!.document.createElement('style');
-        st.textContent = css;
-        w!.document.head.appendChild(st);
-      } catch {
-        if (ss.href) {
-          const l = w!.document.createElement('link');
-          l.rel = 'stylesheet';
-          l.href = ss.href;
-          w!.document.head.appendChild(l);
-        }
-      }
-    });
-    w.document.title = 'Take1';
-    w.document.documentElement.className = native ? 'fc-native' : 'fc-pip';
-    w.document.body.className = 'fc-body';
-    const root = w.document.createElement('div');
-    root.id = 'pill-root';
-    w.document.body.appendChild(root);
+    const root = prepWindow(w, native ? 'fc-native' : 'fc-pip', 'pill-root');
     w.addEventListener('keydown', (e) => keyHandler(e));
     w.addEventListener('keyup', (e) => keyUpHandler(e));
     w.addEventListener('blur', () => releaseKeys());
@@ -356,17 +348,38 @@ export class Recorder {
       this.pillWin = null;
       this.pillRoot = null;
       store.set({ pillOpen: false });
+      // in the browser, the keys can't reach Take1 from other windows without it
+      if (!native && ['rolling', 'hold', 'paused', 'preroll', 'rewinding'].includes(store.get().phase))
+        toast('Floating bar closed. Take1 can only hear Ctrl+Shift while its tab is in front now. Reopen it from Record, or get the desktop app.', 'rec');
     });
     this.pillWin = w;
     this.pillRoot = root;
+    if (native) this.openFx();
     store.set({ pillOpen: true });
     return true;
+  }
+
+  /** Desktop: the transparent overlay across the screen, under the bar. */
+  private openFx() {
+    if (this.fxWin && !this.fxWin.closed) return;
+    const w = window.open('about:blank', 'take1-fx');
+    if (!w) return;
+    this.fxRoot = prepWindow(w, 'fc-native', 'fx-root');
+    this.fxWin = w;
+    w.addEventListener('pagehide', () => {
+      if (this.fxWin !== w) return;
+      this.fxWin = null;
+      this.fxRoot = null;
+    });
   }
 
   closePill() {
     this.pillWin?.close();
     this.pillWin = null;
     this.pillRoot = null;
+    this.fxWin?.close();
+    this.fxWin = null;
+    this.fxRoot = null;
     store.set({ pillOpen: false });
   }
 
@@ -416,6 +429,8 @@ export class Recorder {
     this.ring.push({ t, s: copy });
     while (this.ring.length && this.ring[0].t < t - 1) this.ring.shift();
     const ses = this.session;
+    if (!ses) this.wakeFeed(copy, t);
+    else this.wake = null;
     if (ses) {
       ses.buf.push(copy);
       if (this.loud(copy)) {
@@ -645,6 +660,102 @@ export class Recorder {
       return this.unsure('', ['cut', 'pause', 'wrap']);
     }
     this.finishCommand(text, s, audio16);
+  }
+
+  // ───────────────────────── wake phrase (desktop, opt-in) ─────────────────────────
+
+  /**
+   * "Take one, cut": commands without holding keys. Speech is split into phrases at
+   * pauses; only short phrases (where a command could be) are recognised, on this
+   * computer, and only ones that start with "Take one" count. Their audio is removed
+   * from the recording like a held-key command.
+   */
+  private wakeFeed(s: Float32Array, t: number) {
+    const st = store.get();
+    if (!native || !st.settings.wake || !stt.ready.command || st.micMuted) {
+      this.wake = null;
+      return;
+    }
+    if (this.wakeArmed && this.ctxTime > this.wakeArmed.until) {
+      const id = this.wakeArmed.id;
+      this.wakeArmed = null;
+      if (store.get().listen.id === id && store.get().listen.state === 'listening') store.set((x) => ({ listen: { ...x.listen, state: 'off' } }));
+    }
+    const dur = s.length / this.pcm.sr;
+    const loud = this.loud(s);
+    const w = this.wake;
+    if (!w) {
+      if (!loud) return;
+      // a phrase begins: keep a moment before it, so the first syllable isn't clipped
+      const pre = this.ring.filter((r) => r.t >= t - 0.3 && r.t < t).map((r) => r.s);
+      this.wake = { onset: t, startOut: this.outputAt(t), buf: [...pre, s], lastLoud: t + dur, long: false };
+      return;
+    }
+    if (loud) w.lastLoud = t + dur;
+    // "Take one, speed up 8x" fits in ~3 s; longer phrases are narration (after "Take one" alone, allow 5 s)
+    const limit = this.wakeArmed ? 5 : 3.2;
+    if (!w.long) {
+      if (t + dur - w.onset > limit) {
+        w.long = true;
+        w.buf = [];
+      } else w.buf.push(s);
+    }
+    if (t + dur - w.lastLoud > 0.45) {
+      this.wake = null;
+      if (!w.long) this.wakeRecognise(w, t + dur);
+    }
+  }
+
+  /** Output-timeline position of an AudioContext time, while recording (else null). */
+  private outputAt(ctxT: number): number | null {
+    const ph = store.get().phase;
+    if (ph !== 'rolling' && ph !== 'hold') return null;
+    return Math.max(this.lastPunch, this.outputTime() - Math.max(0, this.ctxTime - ctxT) * this.rate);
+  }
+
+  private async wakeRecognise(w: { onset: number; startOut: number | null; buf: Float32Array[] }, endCtx: number) {
+    if (this.wakeBusy || this.session || store.get().listen.state === 'thinking') return;
+    this.wakeBusy = true;
+    try {
+      const total = w.buf.reduce((a, b) => a + b.length, 0);
+      const pcm = new Float32Array(total);
+      let p = 0;
+      for (const b of w.buf) {
+        pcm.set(b, p);
+        p += b.length;
+      }
+      const audio16 = prepCommand(to16k(pcm, this.pcm.sr), this.thr * 0.8);
+      let text = '';
+      try {
+        text = (await stt.command(audio16)).trim();
+      } catch {
+        return;
+      }
+      const m = WAKE.exec(text.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim());
+      const armed = this.wakeArmed && this.ctxTime <= this.wakeArmed.until ? this.wakeArmed : null;
+      if (!m && !armed) return;
+      if (this.session) return; // you started holding the keys meanwhile
+      const endOut = this.outputAt(endCtx);
+      const startOut = armed && !m ? armed.startOut ?? w.startOut : w.startOut;
+      if (m && !m[1].trim()) {
+        // just "Take one": listen for the command in the next phrase, like holding the keys
+        const ph = store.get().phase;
+        if (startOut !== null && endOut !== null && (ph === 'rolling' || ph === 'hold')) this.scrubs.push({ start: Math.max(this.lastPunch, startOut - 0.05), end: endOut + 0.2 });
+        store.set((x) => ({ listen: { state: 'listening', heard: '', intent: null, alternatives: [], id: x.listen.id + 1 } }));
+        this.wakeArmed = { until: this.ctxTime + 5, startOut, id: store.get().listen.id };
+        sounds.ping();
+        return;
+      }
+      const said = m ? m[1].trim() : text;
+      // "Take on the next part…" is narration, not a command: only act on something we understand
+      if (!armed && !interpret(said, store.get().marks, await stt.intentScores(said)).command) return;
+      this.wakeArmed = null;
+      const s: Session = { hold: false, startCtx: w.onset, onsetCtx: w.onset, startOut, endOut, buf: [], speech: true, lastLoud: endCtx };
+      store.set((x) => ({ listen: { state: 'thinking', heard: '', intent: null, alternatives: [], id: armed ? x.listen.id : x.listen.id + 1 } }));
+      await this.finishCommand(said, s);
+    } finally {
+      this.wakeBusy = false;
+    }
   }
 
   private unsure(heard: string, alternatives: string[]) {
@@ -1515,6 +1626,32 @@ export class Recorder {
 }
 
 /** Chrome labels captures with internal ids ("web-contents-media-stream://7F40…"); show something human. */
+/** Give a new floating window Take1's styles and an empty root to render into. */
+function prepWindow(w: Window, htmlClass: string, rootId: string) {
+  [...document.styleSheets].forEach((ss) => {
+    try {
+      const css = [...ss.cssRules].map((r) => r.cssText).join('\n');
+      const st = w.document.createElement('style');
+      st.textContent = css;
+      w.document.head.appendChild(st);
+    } catch {
+      if (ss.href) {
+        const l = w.document.createElement('link');
+        l.rel = 'stylesheet';
+        l.href = ss.href;
+        w.document.head.appendChild(l);
+      }
+    }
+  });
+  w.document.title = 'Take1';
+  w.document.documentElement.className = htmlClass;
+  w.document.body.className = 'fc-body';
+  const root = w.document.createElement('div');
+  root.id = rootId;
+  w.document.body.appendChild(root);
+  return root;
+}
+
 function friendlySource(label: string, surface: string | null) {
   if (!label || /^web-contents-media-stream:/i.test(label)) return surface === 'browser' || /^web-contents/.test(label) ? 'A browser tab' : 'Shared window';
   if (/^screen:/i.test(label) || surface === 'monitor') return 'Entire screen';
