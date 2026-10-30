@@ -22,6 +22,9 @@ export interface Take1Native {
   pillVisible(on: boolean): void;
   showMain(): void;
   hideMain(): void;
+  /** Google sign-in through the system browser (loopback + PKCE); keeps a refresh token. */
+  googleAuth?(o: { clientId: string; clientSecret: string; scopes: string }): Promise<{ access_token: string; expires_in: number; scope?: string }>;
+  googleSignOut?(): Promise<void>;
 }
 
 export const native: Take1Native | undefined = (window as any).take1Native;

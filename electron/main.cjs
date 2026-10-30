@@ -3,13 +3,17 @@
  *
  *  - Hold-to-talk from any app (Ctrl+Shift by default, via a low-level keyboard hook),
  *    plus global shortcuts (Ctrl+Alt+R record, Ctrl+Alt+C cut, ...).
- *  - A Wispr-style floating pill: transparent, always on top, never steals focus,
- *    and excluded from screen capture (setContentProtection) so it never appears
- *    in your video, even when you record the whole screen.
+ *  - Floating controls on the right edge of the screen: transparent, always on top,
+ *    never steal focus, and excluded from screen capture (setContentProtection) so
+ *    they never appear in your video, even when you record the whole screen.
+ *  - Google sign-in for YouTube / Drive uploads through the system browser
+ *    (loopback redirect + PKCE), with the refresh token encrypted by the OS.
  *  - A custom window/screen picker (desktopCapturer) behind getDisplayMedia.
  *  - backgroundThrottling off, so recording keeps full frame rate when hidden.
  */
-const { app, BrowserWindow, globalShortcut, ipcMain, desktopCapturer, session, screen, protocol, net, shell } = require('electron');
+const { app, BrowserWindow, globalShortcut, ipcMain, desktopCapturer, session, screen, protocol, net, shell, safeStorage } = require('electron');
+const http = require('http');
+const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
 const { pathToFileURL } = require('url');
@@ -20,6 +24,7 @@ const SETTINGS = () => path.join(app.getPath('userData'), 'shortcuts.json');
 
 const DEFAULTS = {
   record: 'Ctrl+Alt+R',
+  pause: 'Ctrl+Alt+P',
   cut: 'Ctrl+Alt+C',
   hold: 'Ctrl+Alt+H',
   mic: 'Ctrl+Alt+M',
@@ -140,12 +145,12 @@ function registerAll() {
   return ok;
 }
 
+/** The controls sit on the right edge, vertically centred, like Flow's side controls. */
+const RAIL = { w: 380, h: 560 };
 function placePill() {
   if (!pill || pill.isDestroyed()) return;
   const d = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
-  const w = 560;
-  const h = 320;
-  pill.setBounds({ x: Math.round(d.x + (d.width - w) / 2), y: Math.round(d.y + d.height - h - 8), width: w, height: h });
+  pill.setBounds({ x: Math.round(d.x + d.width - RAIL.w), y: Math.round(d.y + (d.height - RAIL.h) / 2), width: RAIL.w, height: RAIL.h });
 }
 
 function createMain() {
@@ -173,8 +178,8 @@ function createMain() {
       return {
         action: 'allow',
         overrideBrowserWindowOptions: {
-          width: 560,
-          height: 320,
+          width: RAIL.w,
+          height: RAIL.h,
           frame: false,
           transparent: true,
           backgroundColor: '#00000000',
@@ -229,7 +234,10 @@ app.whenReady().then(() => {
   session.defaultSession.setDisplayMediaRequestHandler(async (_req, callback) => {
     try {
       const sources = await desktopCapturer.getSources({ types: ['window', 'screen'] });
-      const src = sources.find((s) => s.id === pendingSource) || sources.find((s) => s.id.startsWith('screen:'));
+      // Only ever capture what you picked. If that window has gone (closed, or its id
+      // changed), refuse rather than fall back to the whole screen.
+      const src = pendingSource ? sources.find((s) => s.id === pendingSource) : null;
+      pendingSource = null;
       callback(src ? { video: src } : {});
     } catch {
       callback({});
@@ -238,6 +246,18 @@ app.whenReady().then(() => {
 
   session.defaultSession.setPermissionRequestHandler((_wc, permission, cb) => {
     cb(['media', 'display-capture', 'clipboard-sanitized-write', 'clipboard-read', 'fullscreen'].includes(permission));
+  });
+
+  // Uploads go from the page to Google's APIs. The app:// origin isn't a web origin
+  // Google knows, so make sure the browser lets those responses through.
+  session.defaultSession.webRequest.onHeadersReceived({ urls: ['https://*.googleapis.com/*'] }, (details, cb) => {
+    const h = details.responseHeaders || {};
+    for (const k of Object.keys(h)) if (/^access-control-/i.test(k)) delete h[k];
+    h['Access-Control-Allow-Origin'] = ['*'];
+    h['Access-Control-Allow-Headers'] = ['Authorization, Content-Type, Content-Range, X-Upload-Content-Type, X-Upload-Content-Length'];
+    h['Access-Control-Allow-Methods'] = ['GET, POST, PUT, OPTIONS'];
+    h['Access-Control-Expose-Headers'] = ['Location, Range'];
+    cb({ responseHeaders: h, statusLine: details.method === 'OPTIONS' ? 'HTTP/1.1 200 OK' : details.statusLine });
   });
 
   loadShortcuts();
@@ -266,7 +286,8 @@ app.whenReady().then(() => {
       .map((s) => ({
         id: s.id,
         name: s.name,
-        thumbnail: s.thumbnail.toDataURL(),
+        // JPEG keeps 40 open windows to a few hundred KB over IPC (PNG data URLs are ~10× bigger)
+        thumbnail: 'data:image/jpeg;base64,' + s.thumbnail.toJPEG(72).toString('base64'),
         icon: s.appIcon && !s.appIcon.isEmpty() ? s.appIcon.toDataURL() : null,
         kind: s.id.startsWith('screen:') ? 'screen' : 'window',
       }));
@@ -276,11 +297,9 @@ app.whenReady().then(() => {
   });
 
   // Esc is only grabbed while a command session is open
-  ipcMain.on('listening', (_e, on) => {
-    if (on) {
-      if (!globalShortcut.isRegistered('Escape')) globalShortcut.register('Escape', () => send('cancel'));
-    } else if (globalShortcut.isRegistered('Escape')) globalShortcut.unregister('Escape');
-  });
+  // Esc while talking: the keyboard hook already treats any extra key (Esc included)
+  // as "not a command" and cancels, so no system-wide Escape shortcut is needed.
+  ipcMain.on('listening', () => {});
 
   ipcMain.on('pill:interactive', (_e, on) => {
     if (pill && !pill.isDestroyed()) pill.setIgnoreMouseEvents(!on, { forward: true });
@@ -300,10 +319,104 @@ app.whenReady().then(() => {
   });
   ipcMain.on('main:hide', () => main && main.minimize());
 
+  ipcMain.handle('google:auth', (_e, o) => googleToken(o));
+  ipcMain.handle('google:signout', () => {
+    try {
+      fs.unlinkSync(GOOGLE_FILE());
+    } catch {
+      /* not signed in */
+    }
+  });
+
   app.on('activate', () => {
     if (!main) createMain();
   });
 });
+
+// ───────────────── Google sign-in (desktop) ─────────────────
+
+const GOOGLE_FILE = () => path.join(app.getPath('userData'), 'google.bin');
+
+function readGoogle() {
+  try {
+    const raw = fs.readFileSync(GOOGLE_FILE());
+    return JSON.parse(safeStorage.isEncryptionAvailable() ? safeStorage.decryptString(raw) : raw.toString('utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function writeGoogle(data) {
+  const json = JSON.stringify(data);
+  fs.writeFileSync(GOOGLE_FILE(), safeStorage.isEncryptionAvailable() ? safeStorage.encryptString(json) : Buffer.from(json));
+}
+
+async function tokenRequest(params) {
+  const res = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams(params).toString(),
+  });
+  const j = await res.json();
+  if (!res.ok) throw new Error(j.error_description || j.error || `Google said ${res.status}`);
+  return j;
+}
+
+/** Fresh access token: from the saved refresh token if it covers the scopes, else a sign-in in the browser. */
+async function googleToken({ clientId, clientSecret, scopes }) {
+  const saved = readGoogle();
+  const want = scopes.split(' ');
+  if (saved && saved.clientId === clientId && saved.refresh_token && want.every((s) => saved.scopes.includes(s))) {
+    try {
+      const t = await tokenRequest({ client_id: clientId, client_secret: clientSecret, refresh_token: saved.refresh_token, grant_type: 'refresh_token' });
+      return { access_token: t.access_token, expires_in: t.expires_in, scope: saved.scopes.join(' ') };
+    } catch {
+      /* revoked or expired: sign in again */
+    }
+  }
+  const verifier = crypto.randomBytes(48).toString('base64url');
+  const challenge = crypto.createHash('sha256').update(verifier).digest('base64url');
+  const state = crypto.randomBytes(16).toString('hex');
+  const allScopes = [...new Set([...(saved && saved.clientId === clientId ? saved.scopes : []), ...want])];
+  const code = await new Promise((resolve, reject) => {
+    const server = http.createServer((req, res) => {
+      const u = new URL(req.url, 'http://127.0.0.1');
+      if (u.pathname !== '/') return res.end();
+      const ok = u.searchParams.get('state') === state && u.searchParams.get('code');
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(`<body style="font:16px system-ui;padding:40px;background:#ffffeb;color:#1a1a1a">${ok ? 'Signed in. You can close this tab and go back to Take1.' : 'Sign-in didn’t complete. Go back to Take1 and try again.'}</body>`);
+      server.close();
+      ok ? resolve({ code: u.searchParams.get('code'), redirect: `http://127.0.0.1:${server.address()?.port ?? port}` }) : reject(new Error(u.searchParams.get('error') || 'Sign-in was cancelled'));
+    });
+    let port = 0;
+    server.listen(0, '127.0.0.1', () => {
+      port = server.address().port;
+      const auth = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+      auth.search = new URLSearchParams({
+        client_id: clientId,
+        redirect_uri: `http://127.0.0.1:${port}`,
+        response_type: 'code',
+        scope: allScopes.join(' '),
+        code_challenge: challenge,
+        code_challenge_method: 'S256',
+        access_type: 'offline',
+        prompt: 'consent',
+        state,
+      }).toString();
+      shell.openExternal(auth.toString());
+    });
+    // a wrong client type makes Google stop on its own error page and never come back here
+    setTimeout(() => {
+      server.close();
+      reject(new Error('Sign-in timed out'));
+    }, 3 * 60 * 1000);
+  });
+  const t = await tokenRequest({ client_id: clientId, client_secret: clientSecret, code: code.code, code_verifier: verifier, redirect_uri: code.redirect, grant_type: 'authorization_code' });
+  const scopesGranted = (t.scope || allScopes.join(' ')).split(' ');
+  writeGoogle({ clientId, refresh_token: t.refresh_token || saved?.refresh_token, scopes: scopesGranted });
+  if (main && !main.isDestroyed()) main.show();
+  return { access_token: t.access_token, expires_in: t.expires_in, scope: scopesGranted.join(' ') };
+}
 
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();

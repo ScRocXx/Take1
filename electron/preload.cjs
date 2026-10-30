@@ -15,4 +15,6 @@ contextBridge.exposeInMainWorld('take1Native', {
   pillVisible: (on) => ipcRenderer.send('pill:visible', !!on),
   showMain: () => ipcRenderer.send('main:show'),
   hideMain: () => ipcRenderer.send('main:hide'),
+  googleAuth: (o) => ipcRenderer.invoke('google:auth', o),
+  googleSignOut: () => ipcRenderer.invoke('google:signout'),
 });
