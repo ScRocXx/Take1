@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react';
 import { recorder } from '../engine/recorder';
 import { stt } from '../voice/stt';
 import { native, type NativeSource } from '../lib/native';
-import { setFlag, store, useStore, type Rect } from '../lib/store';
+import { phone } from '../lib/device';
+import { setFlag, store, toast, useStore, type Rect } from '../lib/store';
 import { INTENT_LABEL, type Intent } from '../voice/intent';
 import { Bars, Button, Glyph, Icon, Keys, LivePreview, holdToTalk, useDrawBox, Overlay } from '../ui/components';
 
@@ -24,6 +25,11 @@ export const support = () => ({
  * anything is recorded. Continue goes to Setup.
  */
 export function Welcome() {
+  if (phone) return <PhoneWelcome />;
+  return <ComputerWelcome />;
+}
+
+function ComputerWelcome() {
   const accel = useStore((s) => s.talkKey);
   const sup = support();
   const go = () => {
@@ -71,6 +77,99 @@ export function Welcome() {
         </aside>
       </section>
     </main>
+  );
+}
+
+const DEMO_URL = 'https://youtu.be/eM0dT7hlP1M';
+const SITE_URL = 'https://take1-coral.vercel.app/';
+
+/**
+ * Phones: phone browsers can't record a computer screen, so this page explains Take1,
+ * hands the link over to a computer, and lets you try the voice commands here.
+ */
+function PhoneWelcome() {
+  return (
+    <main className="setup welcome phone-welcome">
+      <section className="pw-hero">
+        <p className="overline">Take1 · voice-directed screen recorder</p>
+        <h1>
+          Mess up <em>out loud.</em>
+        </h1>
+        <p className="deck">
+          Take1 records your computer screen and lets you direct it by voice. Fluff a line, say “cut”: it rewinds to the start of your sentence, replays the
+          last five seconds and puts you back in. The video is finished when you say “that’s a wrap.”
+        </p>
+      </section>
+      <HandoffCard />
+      <section className="pw-try">
+        <h2>Try it here</h2>
+        <p className="muted">Turn on the mic, hold the button and say a command to see what Take1 understands.</p>
+        <MicCard phone />
+        <PracticeCard phone onDone={() => {}} />
+      </section>
+      <section className="pw-facts">
+        <ul className="facts">
+          <li>
+            <strong>Push to talk.</strong> Commands are only heard while you hold the keys. The rest of the time your voice is just narration in the video.
+          </li>
+          <li>
+            <strong>Say it your way.</strong> “Redo that line”, “hang on” and “we’re done” work as well as “cut”, “pause” and “stop recording”.
+          </li>
+          <li>
+            <strong>On your device.</strong> Speech is recognised locally. Nothing you say is uploaded.
+          </li>
+          <li>
+            <strong>Finished when you stop.</strong> Cuts, pauses and sped-up waits are already edited in. Add captions and chapters, then send it to a folder,
+            YouTube or Drive.
+          </li>
+        </ul>
+      </section>
+    </main>
+  );
+}
+
+/** Recording happens on a computer: send this page there. */
+function HandoffCard() {
+  const url = SITE_URL;
+  const [copied, setCopied] = useState(false);
+  const canShare = typeof navigator.share === 'function';
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      toast(`Copy this link: ${url}`, 'muted');
+    }
+  };
+  const share = async () => {
+    try {
+      await navigator.share({ title: 'Take1', text: 'Open Take1 on my computer', url });
+    } catch {
+      /* closed the share sheet */
+    }
+  };
+  return (
+    <section className="card handoff">
+      <h3>Record on your computer</h3>
+      <p>Phones can’t record a computer screen, so recording happens on a computer, in Chrome or Edge. Send yourself the link:</p>
+      <a className="handoff-url" href={url} target="_blank" rel="noreferrer">
+        {url}
+      </a>
+      <div className="handoff-btns">
+        {canShare && (
+          <Button kind="primary" onClick={share}>
+            Send link
+          </Button>
+        )}
+        <Button kind={canShare ? 'ghost' : 'primary'} onClick={copy}>
+          {copied ? 'Copied' : 'Copy link'}
+        </Button>
+      </div>
+      <a className="handoff-demo" href={DEMO_URL} target="_blank" rel="noreferrer">
+        {Icon.play} Watch the demo video
+      </a>
+    </section>
   );
 }
 
@@ -126,7 +225,7 @@ export function Setup() {
   );
 }
 
-function MicCard() {
+function MicCard({ phone: onPhone = false }: { phone?: boolean }) {
   const micOn = useStore((s) => s.micOn);
   const devices = useStore((s) => s.micDevices);
   const device = useStore((s) => s.micDevice);
@@ -190,7 +289,9 @@ function MicCard() {
         </>
       ) : (
         <>
-          <p className="muted small">Speak normally once it’s on: the bars should move.</p>
+          <p className="muted small">
+            {onPhone ? 'Turn it on to try the voice commands. The speech model (about 60 MB) downloads once, so Wi-Fi is best.' : 'Speak normally once it’s on: the bars should move.'}
+          </p>
           <Button kind="primary" icon={Icon.mic} onClick={start} disabled={busy}>
             {busy ? 'Waiting for permission…' : 'Turn on microphone'}
           </Button>
@@ -200,7 +301,7 @@ function MicCard() {
   );
 }
 
-function PracticeCard({ onDone }: { onDone: () => void }) {
+function PracticeCard({ onDone, phone: onPhone = false }: { onDone: () => void; phone?: boolean }) {
   const micOn = useStore((s) => s.micOn);
   const tried = useStore((s) => s.tried);
   const listen = useStore((s) => s.listen);
@@ -213,10 +314,10 @@ function PracticeCard({ onDone }: { onDone: () => void }) {
   return (
     <div className={`card practice ${!micOn ? 'dim' : ''}`}>
       <header className="practice-head">
-        <h3>Practise push-to-talk</h3>
+        <h3>{onPhone ? 'Try the commands' : 'Practise push-to-talk'}</h3>
         <span className="count">{count}/5</span>
       </header>
-      <KeyMeter />
+      {!onPhone && <KeyMeter />}
       <div className="try-grid">
         {TRY.map((t) => (
           <div key={t.key} className={`try ${tried[t.key] ? 'hit' : ''}`}>
@@ -229,9 +330,9 @@ function PracticeCard({ onDone }: { onDone: () => void }) {
         ))}
       </div>
       <div className="row">
-        <button className="btn btn-ink" {...holdToTalk} disabled={!micOn}>
-          {Icon.voice}
-          {listen.state === 'listening' ? 'Listening… release to send' : 'Hold to talk'}
+        <button className={`btn btn-ink ${onPhone ? `phone-talk ls-${listen.state}` : ''}`} {...holdToTalk} disabled={!micOn}>
+          {listen.state === 'listening' ? <Bars count={5} /> : Icon.voice}
+          {listen.state === 'listening' ? (onPhone ? 'Listening… let go to send' : 'Listening… release to send') : onPhone ? 'Hold, say a command, let go' : 'Hold to talk'}
         </button>
         {listen.heard && listen.state !== 'listening' && (
           <span className="heard">
@@ -240,12 +341,16 @@ function PracticeCard({ onDone }: { onDone: () => void }) {
           </span>
         )}
       </div>
-      <p className="muted small">
-        {native ? 'The keys work in any app.' : 'In the browser, the keys work while this window is focused.'} Nothing is recorded here.{' '}
-        <button className="link-btn" onClick={onDone}>
-          {count >= 3 ? 'Done, continue' : 'Skip and continue'}
-        </button>
-      </p>
+      {onPhone ? (
+        <p className="muted small">Nothing is recorded here. On a computer you hold Ctrl + Shift instead of this button.</p>
+      ) : (
+        <p className="muted small">
+          {native ? 'The keys work in any app.' : 'In the browser, the keys work while this window is focused.'} Nothing is recorded here.{' '}
+          <button className="link-btn" onClick={onDone}>
+            {count >= 3 ? 'Done, continue' : 'Skip and continue'}
+          </button>
+        </p>
+      )}
     </div>
   );
 }

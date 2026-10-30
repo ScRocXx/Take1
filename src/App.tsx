@@ -2,6 +2,7 @@ import { Fragment, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { recorder, keyHandler, keyUpHandler, releaseKeys } from './engine/recorder';
 import { native } from './lib/native';
+import { phone } from './lib/device';
 import { library } from './lib/library';
 import { useStore, store, type Screen } from './lib/store';
 import { Icon, Keys, Wordmark } from './ui/components';
@@ -50,6 +51,9 @@ export function App() {
       window.removeEventListener('blur', releaseKeys);
     };
   }, []);
+
+  // phones get the landing page only (they can't record a computer screen); see lib/device
+  if (phone) return <PhoneApp />;
 
   const idx = STEPS.findIndex((s) => s.key === screen);
   const recording = phase !== 'idle' && phase !== 'wrapped';
@@ -132,6 +136,33 @@ export function App() {
       )}
       {floating && recorder.pillRoot && createPortal(<FloatingControls layout={(window as any).__fcLayout ?? (native ? 'rail' : 'remote')} />, recorder.pillRoot)}
       {floating && recorder.fxRoot && createPortal(<FxOverlay />, recorder.fxRoot)}
+    </div>
+  );
+}
+
+/** Phones: the wordmark, the guide, and the landing page with a place to try the commands. */
+function PhoneApp() {
+  const toast = useStore((s) => s.toast);
+  const helpOpen = useStore((s) => s.helpOpen);
+  return (
+    <div className="app scr-welcome">
+      <nav className="topnav">
+        <span className="wm-btn" aria-label="Take1">
+          <Wordmark />
+        </span>
+        <div className="nav-right">
+          <button className="nav-link" onClick={() => store.set({ helpOpen: true })}>
+            How it works
+          </button>
+        </div>
+      </nav>
+      <Welcome />
+      {helpOpen && <Help />}
+      {toast && (
+        <div className={`toast t-${toast.tone}`} key={toast.id}>
+          {toast.text}
+        </div>
+      )}
     </div>
   );
 }

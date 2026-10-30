@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { native } from '../lib/native';
+import { phone } from '../lib/device';
 import { store, useStore, DEFAULT_SHORTCUTS } from '../lib/store';
 import { CALL_SHEET } from '../voice/intent';
 import { Glyph, Keys } from './components';
@@ -82,10 +83,12 @@ export function Help() {
             </p>
           </div>
           <p className="muted small">
-            {native
+            {phone
+              ? 'On this phone you can try the commands with the hold button on the home page. Recording happens on a computer, in Chrome or Edge, where you hold the keys instead.'
+              : native
               ? 'Desktop app: the keys work from any app, even while Take1 is hidden. You can also turn on the wake phrase in Settings and just say “Take one, cut”.'
               : 'Browser: the keys only work while the Take1 tab or the floating bar is focused. While you show another window, press and hold the voice button on the floating bar. The desktop app (Get the app, top right) makes the keys work everywhere.'}{' '}
-            Fn can’t be used: on Windows laptops it never reaches the operating system. You can change the talk key in {native ? 'Settings' : 'Record → Settings'}.
+            {!phone && <>Fn can’t be used: on Windows laptops it never reaches the operating system. You can change the talk key in {native ? 'Settings' : 'Record → Settings'}.</>}
           </p>
         </section>
 
@@ -106,7 +109,7 @@ export function Help() {
         </section>
 
         <section className="help-sec">
-          <h3>Shortcuts</h3>
+          <h3>{phone ? 'Shortcuts on a computer' : 'Shortcuts'}</h3>
           <table className="keys-table">
             <tbody>
               <tr>

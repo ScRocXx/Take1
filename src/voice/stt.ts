@@ -1,3 +1,4 @@
+import { phone } from '../lib/device';
 import { store } from '../lib/store';
 import { PROTOTYPES, type Intent } from './intent';
 
@@ -89,7 +90,8 @@ class Stt {
       (this.ready as any)[d.kind] = true;
       if (d.kind === 'command') {
         store.set({ engine: { status: 'ready', progress: 1, detail: null } });
-        setTimeout(() => this.warmAccurate(), 8000);
+        // phones only try commands, so they skip the second, bigger download
+        if (!phone) setTimeout(() => this.warmAccurate(), 8000);
       }
       if (d.kind === 'transcript' && store.get().transcribing) store.set({ captions: { status: 'transcribing', progress: 0, detail: null } });
       if (d.kind === 'embed') this.buildPrototypes();

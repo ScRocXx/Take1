@@ -947,3 +947,63 @@ html.fc-pip, html.fc-pip body { background: var(--canvas); }
 .settings-page .settings-head h3 { display: none; }
 .settings-page .settings-head { justify-content: flex-end; }
 .set-group .talk-pick .btn { white-space: nowrap; flex: none; }
+
+/* ═════════ phones only (html.is-phone, set by lib/device.ts; never on a computer) ═════════ */
+.is-phone body { -webkit-tap-highlight-color: transparent; overflow-x: hidden; }
+.is-phone .topnav { height: 56px; padding: 0 16px; gap: 12px; padding-top: env(safe-area-inset-top); box-sizing: content-box; }
+.is-phone .topnav .nav-right { margin-left: auto; gap: 4px; }
+.is-phone .topnav .nav-link { padding: 10px 12px; font-size: 15px; }
+.is-phone .phone-welcome { padding: 24px 16px calc(40px + env(safe-area-inset-bottom)); gap: 20px; max-width: 560px; }
+.is-phone .pw-hero { display: flex; flex-direction: column; gap: 14px; }
+.is-phone .pw-hero .overline { margin: 0; font-size: 10.5px; }
+.is-phone .pw-hero h1 { font: 400 clamp(46px, 14vw, 64px)/0.98 var(--serif); letter-spacing: -0.02em; margin: 0; }
+.is-phone .pw-hero h1 em { font-style: italic; }
+.is-phone .pw-hero .deck { margin: 0; font-size: 17px; line-height: 1.5; }
+.is-phone .card { padding: 18px; }
+
+/* hand the link over to a computer */
+.is-phone .handoff { display: flex; flex-direction: column; gap: 12px; background: var(--fathom); color: var(--canvas); border-color: var(--fathom); }
+.is-phone .handoff h3 { margin: 0; font: 400 26px/1.15 var(--serif); color: var(--canvas); text-transform: none; letter-spacing: -0.005em; }
+.is-phone .handoff p { margin: 0; font-size: 15px; line-height: 1.5; color: #ffffebd9; }
+.is-phone .handoff-url { display: block; text-decoration: none; font: 600 15px var(--sans); color: var(--canvas); background: #ffffeb1a; border: 1px solid #ffffeb33; border-radius: var(--r-input); padding: 10px 12px; overflow-wrap: anywhere; user-select: all; }
+.is-phone .handoff-btns { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; }
+.is-phone .handoff-btns .btn { height: 48px; width: 100%; }
+.is-phone .handoff .btn-ghost { border-color: #ffffeb55; color: var(--canvas); }
+.is-phone .handoff .btn-ghost:active { background: #ffffeb1a; }
+.is-phone .handoff-demo { display: inline-flex; align-items: center; gap: 8px; font: 600 14px var(--sans); color: var(--canvas); text-decoration: underline; text-underline-offset: 4px; text-decoration-color: #ffffeb66; padding: 4px 0; align-self: flex-start; }
+.is-phone .handoff-demo svg { width: 16px; height: 16px; }
+
+/* try the commands */
+.is-phone .pw-try { display: flex; flex-direction: column; gap: 12px; }
+.is-phone .pw-try h2 { margin: 8px 0 0; font: 400 28px/1.1 var(--serif); }
+.is-phone .pw-try > p { margin: 0; font-size: 15px; }
+.is-phone .mic-card .btn-primary { width: 100%; height: 52px; }
+.is-phone .mic-card .mic-test { overflow: hidden; }
+.is-phone .mic-card select { height: 44px; font-size: 16px; }
+.is-phone .engine { flex-wrap: wrap; line-height: 1.4; }
+.is-phone .practice .try-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.is-phone .practice .try:last-child { grid-column: 1 / -1; }
+.is-phone .practice .row { flex-direction: column; align-items: stretch; gap: 10px; }
+/* the big hold button: holding it never selects text, scrolls, zooms or opens a menu */
+.is-phone .phone-talk {
+  width: 100%; height: 72px; border-radius: 20px; font-size: 16px; gap: 10px;
+  touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+  transition: background var(--t) var(--ease), transform 120ms var(--ease), box-shadow var(--t) var(--ease);
+}
+.is-phone .phone-talk svg { width: 22px; height: 22px; }
+.is-phone .phone-talk .bars { height: 22px; color: var(--ink); }
+.is-phone .phone-talk.ls-listening { background: var(--lavender); color: var(--ink); transform: scale(0.98); box-shadow: 0 0 0 6px #f0d7ff66; animation: fc-ring 1.2s var(--ease-out) infinite; }
+.is-phone .phone-talk.ls-thinking { background: var(--lavender-2); color: var(--ink); }
+.is-phone .practice .heard { text-align: center; font-size: 15px; }
+.is-phone .practice .muted.small { font-size: 13px; }
+.is-phone .pw-facts .facts li { font-size: 15px; }
+
+/* the guide: full width, comfortable to read */
+.is-phone .help-sec { margin-top: 22px; padding-top: 16px; }
+.is-phone .keys-table { width: 100%; font-size: 13px; }
+.is-phone .toast { left: 16px; right: 16px; transform: none; bottom: calc(16px + env(safe-area-inset-bottom)); text-align: center; }
+@keyframes rise-phone { from { opacity: 0; transform: translateY(12px); } }
+.is-phone .toast { animation-name: rise-phone; }
+.is-phone .drawer { padding: calc(20px + env(safe-area-inset-top)) 18px calc(40px + env(safe-area-inset-bottom)); }
+.is-phone .drawer-title { font-size: 32px; }
+.is-phone .drawer > header button { padding: 10px 4px 10px 12px; font-size: 15px; }
