@@ -1,21 +1,23 @@
 import { useEffect } from 'react';
 import { native } from '../lib/native';
-import { store, useStore } from '../lib/store';
+import { store, useStore, DEFAULT_SHORTCUTS } from '../lib/store';
 import { CALL_SHEET } from '../voice/intent';
 import { Glyph, Keys } from './components';
 
 const SHORTCUT_ROWS: [string, string][] = [
-  ['record', 'Start recording / stop and wrap'],
-  ['cut', 'Cut: redo the last sentence, no voice needed'],
-  ['hold', 'Hold dead air / resume'],
+  ['record', 'Start recording / stop'],
+  ['pause', 'Pause / play'],
+  ['cut', 'Cut: remove the last sentence, no voice needed'],
+  ['hold', 'Speed up the waiting / back to normal speed'],
   ['mic', 'Mute / unmute your mic'],
-  ['pill', 'Show / hide the floating pill'],
+  ['pill', 'Show / hide the floating controls'],
 ];
 
-/** The manual, always one click away ("How it works" in the top bar). */
+/** The manual, one click away ("How it works" in the top bar). */
 export function Help() {
   const talk = useStore((s) => s.talkKey);
   const sc = useStore((s) => s.shortcuts);
+  const speed = useStore((s) => s.settings.speed);
   const close = () => store.set({ helpOpen: false });
   useEffect(() => {
     const k = (e: KeyboardEvent) => e.key === 'Escape' && close();
@@ -33,23 +35,23 @@ export function Help() {
           </button>
         </header>
         <h2 className="drawer-title">
-          Talk. Fluff it. <em>Say cut.</em> Keep going.
+          Talk, and fix mistakes <em>as you go.</em>
         </h2>
-        <p className="muted">You never stop the recording to fix a mistake. Take1 fixes it while you’re still rolling.</p>
+        <p className="muted">You never stop recording to fix a mistake, and there’s no editing afterwards.</p>
 
         <ol className="loop">
           <li>
             <span className="loop-g">
               <Glyph kind="action" size={30} />
             </span>
-            <strong>Record and narrate</strong>
-            <span>Press Record. Talk through your demo like normal.</span>
+            <strong>Record and talk</strong>
+            <span>Press Record. Talk through your demo as you normally would.</span>
           </li>
           <li>
             <span className="loop-g">
               <Glyph kind="listen" size={30} />
             </span>
-            <strong>Fluffed a line?</strong>
+            <strong>Fluffed a sentence?</strong>
             <span>
               Hold <Keys accel={talk} />, say <q>cut</q>, let go.
             </span>
@@ -58,15 +60,15 @@ export function Help() {
             <span className="loop-g">
               <Glyph kind="cut" size={30} />
             </span>
-            <strong>It rewinds and replays</strong>
-            <span>Back to the start of that sentence, then the last 5 s play so you catch your rhythm.</span>
+            <strong>That sentence is removed</strong>
+            <span>Take1 finds where the sentence started, removes it, and plays the 5 s before it so you can pick up the rhythm.</span>
           </li>
           <li>
             <span className="loop-g">
-              <Glyph kind="punch" size={30} />
+              <Glyph kind="play" size={30} />
             </span>
-            <strong>3, 2, 1, you’re back</strong>
-            <span>Say the sentence again. The bad take is gone from the video.</span>
+            <strong>3, 2, 1, say it again</strong>
+            <span>Recording resumes on its own. The bad take never makes it into the video.</span>
           </li>
         </ol>
 
@@ -75,47 +77,48 @@ export function Help() {
           <div className="ptt">
             <Keys accel={talk} />
             <p>
-              Commands are only heard <strong>while you hold the keys</strong> (or press and hold the pill’s voice button). Let go and Take1 acts. The rest of
-              the time it isn’t listening: everything you say is narration on the tape, and your spoken commands are muted out of the final audio.
+              Commands are only heard <strong>while you hold the keys</strong> (or press and hold a voice button). Let go and Take1 acts. The rest of the
+              time it isn’t listening for commands: everything you say is part of the recording, and the commands you speak are removed from the audio.
             </p>
           </div>
           <p className="muted small">
             {native
               ? 'Desktop app: the keys work from any app, even while Take1 is hidden.'
-              : 'Browser: keys only work while the Take1 tab or the floating pill window is focused. While you present another window, use the pill: press and hold its voice button. For keys that work everywhere, run the desktop app (npm run app).'}{' '}
-            Fn can’t be used: on Windows laptops the Fn key never reaches the operating system. Change the talk key in Record → Settings.
+              : 'Browser: the keys only work while the Take1 tab or the floating controls window is focused. While you show another window, press and hold the voice button in the floating controls. The desktop app (npm run app) makes the keys work everywhere.'}{' '}
+            Fn can’t be used: on Windows laptops it never reaches the operating system. You can change the talk key in Record → Settings.
           </p>
         </section>
 
         <section className="help-sec">
-          <h3>Say it your way</h3>
+          <h3>What you can say</h3>
           <ul className="say-list">
             {CALL_SHEET.map((c) => (
               <li key={c.key}>
                 <Glyph kind={c.key} size={20} />
                 <div>
                   <q>{c.say}</q> <small>{c.also}</small>
-                  <span>{c.does}</span>
+                  <span>{c.key === 'hold' ? c.does.replace('4×', `${speed}×`) : c.does}</span>
                 </div>
               </li>
             ))}
           </ul>
+          <p className="muted small">You don’t need the exact words: Take1 matches what you mean, and words that sound alike (“rap”, “paws”) still work.</p>
         </section>
 
         <section className="help-sec">
-          <h3>Buttons and shortcuts</h3>
+          <h3>Shortcuts</h3>
           <table className="keys-table">
             <tbody>
               <tr>
                 <td>
                   Hold <Keys accel={talk} />
                 </td>
-                <td>Give a voice command, release to send</td>
+                <td>Give a voice command; release to send</td>
               </tr>
               {SHORTCUT_ROWS.map(([k, d]) => (
                 <tr key={k}>
                   <td>
-                    <Keys accel={sc[k]} />
+                    <Keys accel={sc[k] ?? DEFAULT_SHORTCUTS[k]} />
                   </td>
                   <td>{d}</td>
                 </tr>
@@ -134,11 +137,11 @@ export function Help() {
           <h3>After you stop</h3>
           <dl className="after">
             <dt>Review</dt>
-            <dd>Watch the finished cut. The timeline marks every splice (where a retake was joined), held waits and blurred sections. Below it, the outtakes: every line you retook, playable.</dd>
+            <dd>Watch the finished video. The strip under it marks joins, sped-up parts and blurs. Transcribe it, edit chapters, and watch the sentences you redid.</dd>
             <dt>Export</dt>
-            <dd>Download the MP4. Generate captions on your device, download them as .srt / .vtt or burn them into the video. Copy a ready-made submission post and chapters.</dd>
+            <dd>Download the MP4 (chapters included), captions as .srt / .vtt or drawn in (pick a style, drag them where you want, choose the font, colours and animation), chapters for YouTube, and send it to a folder, YouTube or Google Drive.</dd>
             <dt>Library</dt>
-            <dd>Every exported take is saved on this computer. Play, rename, download or delete them any time.</dd>
+            <dd>Every export is saved on this computer. Play, rename, download or delete them any time.</dd>
           </dl>
         </section>
       </aside>
