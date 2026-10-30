@@ -19,6 +19,9 @@ export function FxOverlay() {
   const match = useStore((s) => s.matchScore);
   const seconds = useStore((s) => s.settings.replaySeconds);
   const teleprompter = useStore((s) => s.teleprompter);
+  // if Windows can't keep this overlay out of captures, don't draw over frames being recorded
+  const leaks = useStore((s) => s.capture?.fx === true);
+  const capturing = phase === 'rolling' || phase === 'hold';
   const root = useRef<HTMLDivElement>(null);
   const [burst, setBurst] = useState<typeof last>(null);
 
@@ -57,7 +60,7 @@ export function FxOverlay() {
 
   return (
     <div className="fxo" ref={root}>
-      {burst && phase !== 'rewinding' && (
+      {burst && phase !== 'rewinding' && !(leaks && capturing) && (
         <>
           <div className={`fxo-tint fx-${burst.kind}`} key={`t${burst.id}`} />
           <div className={`fxo-card b-${burst.kind}`} key={`c${burst.id}`}>

@@ -58,12 +58,13 @@ function DesktopGroup() {
       <div className="talk-pick">
         <span>
           Floating bar
-          <small>Drag it to either edge of the screen, at any height. Hover it for the buttons.</small>
+          <small>Press anywhere on it and drag to either edge of any screen, at any height. Hover it for the buttons.</small>
         </span>
         <Button kind="ghost" onClick={() => native?.pillReset?.()}>
           Reset position
         </Button>
       </div>
+      <CaptureRow />
       {login !== null && (
         <Toggle
           label="Open Take1 when I sign in"
@@ -72,6 +73,49 @@ function DesktopGroup() {
           onChange={async (v) => setLogin((await native?.setOpenAtLogin?.(v)) ?? v)}
         />
       )}
+    </div>
+  );
+}
+
+/**
+ * Does Windows really keep the bar and the animations out of recordings on this PC?
+ * The app checks when it starts (a dot flashes by the bar for a moment) and after the
+ * bar moves screens; this shows the answer and checks again on request.
+ */
+function CaptureRow() {
+  const capture = useStore((s) => s.capture);
+  const phase = useStore((s) => s.phase);
+  const [busy, setBusy] = useState(false);
+  const recording = phase !== 'idle' && phase !== 'wrapped';
+  const build = Number((capture?.build ?? '').split('.')[2]) || 0;
+  const old = capture?.platform === 'win32' && build > 0 && build < 19041;
+  let text: string;
+  if (!capture || capture.state === 'unknown') text = 'Not checked yet.';
+  else if (capture.state === 'hidden') text = 'Yes: the bar and the animations never show up in your video.';
+  else
+    text = old
+      ? 'No. Hiding windows from captures needs Windows 10 version 2004 or newer. Command animations play only between takes, and the slim bar may show in the video.'
+      : `No: Windows still shows ${capture.fx && capture.pill ? 'the bar and the animations' : capture.pill ? 'the bar' : 'the animations'} in captures here. Command animations play only between takes until a check passes.`;
+  return (
+    <div className="talk-pick">
+      <span>
+        Hidden from your recordings
+        <small className={capture?.state === 'leaks' ? 'warn' : undefined}>{text}</small>
+      </span>
+      <Button
+        kind="ghost"
+        disabled={busy || recording || !native?.checkCapture}
+        onClick={async () => {
+          setBusy(true);
+          try {
+            store.set({ capture: await native!.checkCapture() });
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        {busy ? 'Checking…' : 'Check again'}
+      </Button>
     </div>
   );
 }

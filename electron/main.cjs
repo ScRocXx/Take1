@@ -5,7 +5,8 @@
  *    plus global shortcuts (Ctrl+Alt+R record, Ctrl+Alt+C cut, ...).
  *  - A slim floating bar on the edge of the screen (you drag it where you want it):
  *    transparent, always on top, never steals focus, and excluded from screen
- *    capture (setContentProtection) so it never appears in your video.
+ *    capture (setContentProtection) so it never appears in your video. Take1 checks
+ *    that the exclusion really works on this PC (see checkCapture) and says if not.
  *  - A click-through overlay across the whole screen for command animations, the
  *    replay after "cut" and the 3-2-1 countdown, also excluded from capture.
  *  - Google sign-in for YouTube / Drive uploads through the system browser
@@ -97,7 +98,7 @@ function startTalkHook() {
     }
   });
   // a drag of the bar always ends when the mouse button comes up, wherever that is
-  uIOhook.on('mouseup', () => drag && dragEnd());
+  uIOhook.on('mouseup', () => press && pressEnd());
   uIOhook.on('keyup', (e) => {
     down.delete(e.keycode);
     if (pending && !satisfied()) clearTimeout(pending), (pending = null);
@@ -157,6 +158,10 @@ function registerAll() {
 const RAIL = { w: 380, h: 560 };
 /** keeps the opened column (about 380 px tall) on screen */
 const EDGE_MARGIN = 200;
+/** the slim bar's centre, measured from the screen edge (10 px gap + half its 5 px width) */
+const BAR_INSET = 13;
+/** the slim bar's length (1 cm at 100 % scaling) */
+const BAR_LEN = 38;
 
 let barPlace = { displayId: null, side: 'right', frac: 0.5 };
 
@@ -193,10 +198,15 @@ function barGeometry() {
 
 /** Tell the page where the bar is, so the overlay can grow the replay out of it. */
 function announcePlace() {
+  const p = wherePill();
+  if (main && !main.isDestroyed()) main.webContents.send('pill:placed', p);
+  if (fx && !fx.isDestroyed()) fx.setBounds(p.display);
+}
+
+function wherePill() {
   const g = barGeometry();
-  const cx = barPlace.side === 'left' ? g.bounds.x + 37 : g.bounds.x + RAIL.w - 37;
-  if (main && !main.isDestroyed()) main.webContents.send('pill:placed', { side: barPlace.side, cx, cy: g.cy, display: g.display.bounds });
-  if (fx && !fx.isDestroyed()) fx.setBounds(g.display.bounds);
+  const cx = barPlace.side === 'left' ? g.bounds.x + BAR_INSET : g.bounds.x + RAIL.w - BAR_INSET;
+  return { side: barPlace.side, cx, cy: g.cy, display: g.display.bounds };
 }
 
 let slide = null;
@@ -223,33 +233,202 @@ function placePill(animate = false) {
   announcePlace();
 }
 
-/** Dragging: the window follows the pointer; letting go snaps it to the nearer side edge. */
-let drag = null;
-function dragStart() {
-  if (!pill || pill.isDestroyed() || drag) return;
+/**
+ * Moving the bar. Pressing anywhere on it (except the talk button) starts watching the
+ * pointer here, in the shell, so it keeps working however fast you move: once it has
+ * moved 5 px the window follows the pointer; letting go (seen by the system-wide mouse
+ * hook, or by the page) glides it to the nearer side edge of whichever screen it's on.
+ * A press that doesn't move stays a normal click.
+ */
+let press = null;
+/** what the page last asked for (hovered or not); held back while a press is going on */
+let wantInteractive = false;
+
+function setPillMouse(on) {
+  if (!pill || pill.isDestroyed()) return;
+  pill.setIgnoreMouseEvents(!on, { forward: true });
+  shield(pill); // changing the mouse style can change the window's layering, so re-apply
+}
+
+function pressStart() {
+  if (!pill || pill.isDestroyed() || press) return;
   const c = screen.getCursorScreenPoint();
   const b = pill.getBounds();
-  drag = { dx: c.x - b.x, dy: c.y - b.y, timer: null };
-  drag.timer = setInterval(() => {
-    if (!pill || pill.isDestroyed()) return dragEnd();
+  press = { x: c.x, y: c.y, dx: c.x - b.x, dy: c.y - b.y, moving: false, t0: Date.now(), timer: null };
+  setPillMouse(true); // the page must hear the release, even if the pointer outruns the bar
+  press.timer = setInterval(() => {
+    if (!press) return;
+    if (!pill || pill.isDestroyed() || Date.now() - press.t0 > 60000) return pressEnd();
     const p = screen.getCursorScreenPoint();
-    pill.setBounds({ x: p.x - drag.dx, y: p.y - drag.dy, width: RAIL.w, height: RAIL.h });
+    if (!press.moving) {
+      if (Math.hypot(p.x - press.x, p.y - press.y) < 5) return;
+      press.moving = true;
+      if (slide) clearInterval(slide), (slide = null);
+      if (main && !main.isDestroyed()) main.webContents.send('pill:dragging', true);
+    }
+    pill.setBounds({ x: p.x - press.dx, y: p.y - press.dy, width: RAIL.w, height: RAIL.h });
   }, 16);
 }
-function dragEnd() {
-  if (!drag) return;
-  clearInterval(drag.timer);
-  drag = null;
+
+function pressEnd() {
+  if (!press) return;
+  clearInterval(press.timer);
+  const moved = press.moving;
+  press = null;
   if (!pill || pill.isDestroyed()) return;
+  setPillMouse(wantInteractive);
+  if (!moved) return;
   const b = pill.getBounds();
   // the bar sits in the window's middle row, on the side it was on while dragging
-  const cx = barPlace.side === 'left' ? b.x + 37 : b.x + RAIL.w - 37;
+  const cx = barPlace.side === 'left' ? b.x + BAR_INSET : b.x + RAIL.w - BAR_INSET;
   const cy = b.y + RAIL.h / 2;
   const d = screen.getDisplayNearestPoint({ x: Math.round(cx), y: Math.round(cy) });
   const wa = d.workArea;
   barPlace = { displayId: d.id, side: cx < wa.x + wa.width / 2 ? 'left' : 'right', frac: Math.min(1, Math.max(0, (cy - wa.y) / wa.height)) };
   writeDesktop({ bar: barPlace });
   placePill(true);
+  if (main && !main.isDestroyed()) main.webContents.send('pill:dragging', false);
+  // moving to another screen moves the overlay too: check it's still hidden there
+  scheduleCaptureCheck(900);
+}
+
+// ───────────────── keeping the bar and the overlay out of recordings ─────────────────
+
+/**
+ * setContentProtection asks Windows (SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE,
+ * Windows 10 2004+) to leave a window out of every screen capture, Take1's own included.
+ * Some window changes can drop it, so it is re-applied after each of them and every
+ * 2 s while recording. On top of that, Take1 checks that it really works: it flashes a
+ * 12 px dot in each window for a moment, takes a screenshot the same way the recording
+ * does, and looks for the dot.
+ */
+function shield(win) {
+  if (!win || win.isDestroyed()) return;
+  try {
+    win.setContentProtection(true);
+  } catch {
+    /* not supported here */
+  }
+}
+
+let recording = false;
+let shieldTimer = null;
+let capture = { state: 'unknown', fx: null, pill: null, build: require('os').release(), platform: process.platform };
+let checking = null;
+let checkTimer = null;
+
+function scheduleCaptureCheck(ms) {
+  if (checkTimer) clearTimeout(checkTimer);
+  checkTimer = setTimeout(() => {
+    checkTimer = null;
+    if (press) return scheduleCaptureCheck(900); // not while the bar is being moved
+    if (!recording) checkCapture();
+  }, ms);
+}
+
+const PROBE = 12;
+const probeOn = (x, y) =>
+  `(()=>{let d=document.getElementById('t1-probe');if(!d){d=document.createElement('div');d.id='t1-probe';document.body.appendChild(d)}d.style.cssText='position:fixed;left:${x}px;top:${y}px;width:${PROBE}px;height:${PROBE}px;background:#ff00ff;z-index:2147483647;pointer-events:none';})()`;
+const PROBE_OFF = `(()=>{const d=document.getElementById('t1-probe');if(d)d.remove()})()`;
+
+/** One screenshot with a dot in each window: does the recording see them? */
+async function leakTest() {
+  const d = barDisplay();
+  const probes = [];
+  if (fx && !fx.isDestroyed() && fx.isVisible()) {
+    // just under the bar
+    const g = barGeometry();
+    const x = (barPlace.side === 'left' ? g.bounds.x + BAR_INSET : g.bounds.x + RAIL.w - BAR_INSET) - d.bounds.x - PROBE / 2;
+    const y = g.cy - d.bounds.y + BAR_LEN / 2 + 14;
+    probes.push({ key: 'fx', win: fx, local: { x, y }, at: { x, y } });
+  }
+  if (pill && !pill.isDestroyed() && pill.isVisible()) {
+    // just above the bar, in the window's see-through part
+    const b = pill.getBounds();
+    const lx = (barPlace.side === 'left' ? BAR_INSET : RAIL.w - BAR_INSET) - PROBE / 2;
+    const ly = RAIL.h / 2 - BAR_LEN / 2 - 14 - PROBE;
+    probes.push({ key: 'pill', win: pill, local: { x: lx, y: ly }, at: { x: b.x - d.bounds.x + lx, y: b.y - d.bounds.y + ly } });
+  }
+  if (!probes.length) return null;
+  try {
+    await Promise.all(probes.map((p) => p.win.webContents.executeJavaScript(probeOn(p.local.x, p.local.y))));
+    await new Promise((r) => setTimeout(r, 260)); // painted and composited
+    const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: d.bounds.width, height: d.bounds.height } });
+    const src = sources.find((s) => s.display_id === String(d.id)) || (sources.length === 1 ? sources[0] : null);
+    if (!src || src.thumbnail.isEmpty()) return null;
+    const img = src.thumbnail;
+    const size = img.getSize();
+    const sx = size.width / d.bounds.width;
+    const sy = size.height / d.bounds.height;
+    const out = {};
+    for (const p of probes) {
+      // the middle of the dot, 4 × 4 pixels (screen capture is BGRA)
+      const cx = Math.round((p.at.x + PROBE / 2) * sx) - 2;
+      const cy = Math.round((p.at.y + PROBE / 2) * sy) - 2;
+      if (cx < 0 || cy < 0 || cx + 4 > size.width || cy + 4 > size.height) {
+        out[p.key] = null;
+        continue;
+      }
+      const px = img.crop({ x: cx, y: cy, width: 4, height: 4 }).toBitmap();
+      let hits = 0;
+      for (let i = 0; i + 3 < px.length; i += 4) if (px[i] > 180 && px[i + 1] < 100 && px[i + 2] > 180) hits++;
+      out[p.key] = hits >= 8; // seen in the capture: it leaks
+    }
+    return out;
+  } catch {
+    return null;
+  } finally {
+    for (const p of probes) if (!p.win.isDestroyed()) p.win.webContents.executeJavaScript(PROBE_OFF).catch(() => {});
+  }
+}
+
+function report() {
+  if (main && !main.isDestroyed()) main.webContents.send('capture:status', capture);
+}
+
+/** Check, and if a window shows up in captures, try to fix it before giving up on it. */
+async function checkCapture() {
+  if (checking) return checking;
+  checking = (async () => {
+    const windows = () => ({ fx, pill });
+    let r = await leakTest();
+    const repairs = [
+      // 1. set it again from scratch
+      (w) => {
+        w.setContentProtection(false);
+        w.setContentProtection(true);
+      },
+      // 2. hide, protect, show: the order Windows is happiest with
+      (w) => {
+        w.hide();
+        w.setContentProtection(true);
+        w.showInactive();
+        w.setContentProtection(true);
+        if (w === pill) setPillMouse(wantInteractive), pill.moveTop();
+        else w.setIgnoreMouseEvents(true);
+      },
+    ];
+    for (const fix of repairs) {
+      if (!r || !(r.fx || r.pill)) break;
+      for (const k of ['fx', 'pill']) {
+        const w = windows()[k];
+        if (r[k] && w && !w.isDestroyed()) fix(w);
+      }
+      await new Promise((res) => setTimeout(res, 200));
+      r = await leakTest();
+    }
+    // before Windows 10 2004 there is no "leave it out" mode, only "show it black"
+    const build = Number(String(capture.build).split('.')[2]) || 0;
+    if (process.platform === 'win32' && build > 0 && build < 19041) r = { fx: true, pill: true };
+    capture = { ...capture, state: !r ? 'unknown' : r.fx || r.pill ? 'leaks' : 'hidden', fx: r ? r.fx : null, pill: r ? r.pill : null, at: Date.now() };
+    report();
+    return capture;
+  })();
+  try {
+    return await checking;
+  } finally {
+    checking = null;
+  }
 }
 
 function createMain() {
@@ -328,23 +507,32 @@ function createMain() {
       fx = win;
       fx.setAlwaysOnTop(true, 'pop-up-menu');
       fx.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-      fx.setContentProtection(true);
       fx.setIgnoreMouseEvents(true);
+      shield(fx);
       fx.setBounds(barDisplay().bounds);
+      fx.on('show', () => shield(fx));
       fx.showInactive();
+      shield(fx);
       if (pill && !pill.isDestroyed()) pill.moveTop();
       fx.on('closed', () => (fx = null));
+      scheduleCaptureCheck(1500);
       return;
     }
     if (details.frameName !== 'take1-pill') return;
     pill = win;
     pill.setAlwaysOnTop(true, 'screen-saver');
     pill.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-    pill.setContentProtection(true); // invisible to screen capture
-    pill.setIgnoreMouseEvents(true, { forward: true });
+    wantInteractive = false;
+    setPillMouse(false); // click-through until hovered; also applies the capture shield
     placePill();
+    pill.on('show', () => shield(pill));
     pill.showInactive();
-    pill.on('closed', () => (pill = null));
+    shield(pill);
+    pill.on('closed', () => {
+      pill = null;
+      if (press) clearInterval(press.timer), (press = null);
+    });
+    scheduleCaptureCheck(1500);
   });
   // the page is ready to hear where the bar is
   main.webContents.on('did-finish-load', () => announcePlace());
@@ -374,8 +562,8 @@ app.whenReady().then(() => {
   const saved = readDesktop();
   if (saved.bar && (saved.bar.side === 'left' || saved.bar.side === 'right')) barPlace = { displayId: saved.bar.displayId ?? null, side: saved.bar.side, frac: Number(saved.bar.frac) || 0.5 };
   // a monitor plugged in or out: put the bar back somewhere visible
-  screen.on('display-removed', () => placePill(true));
-  screen.on('display-metrics-changed', () => placePill(false));
+  screen.on('display-removed', () => (placePill(true), scheduleCaptureCheck(1500)));
+  screen.on('display-metrics-changed', () => (placePill(false), scheduleCaptureCheck(1500)));
 
   protocol.handle('app', (req) => {
     const { pathname } = new URL(req.url);
@@ -456,30 +644,43 @@ app.whenReady().then(() => {
   ipcMain.on('listening', () => {});
 
   ipcMain.on('pill:interactive', (_e, on) => {
-    if (pill && !pill.isDestroyed()) pill.setIgnoreMouseEvents(!on, { forward: true });
+    wantInteractive = !!on;
+    if (!press) setPillMouse(wantInteractive);
   });
   ipcMain.on('pill:visible', (_e, on) => {
     if (!pill || pill.isDestroyed()) return;
     if (on) {
       placePill();
       pill.showInactive();
-      if (fx && !fx.isDestroyed()) fx.showInactive();
+      shield(pill);
+      if (fx && !fx.isDestroyed()) fx.showInactive(), shield(fx);
       pill.moveTop();
     } else {
       pill.hide();
       if (fx && !fx.isDestroyed()) fx.hide();
     }
   });
-  ipcMain.on('pill:drag', (_e, phase) => (phase === 'start' ? dragStart() : dragEnd()));
+  ipcMain.on('pill:press', () => pressStart());
+  ipcMain.on('pill:release', () => pressEnd());
+  // recording: keep re-applying the shield, and never flash the check's dot into a take
+  ipcMain.on('rec:live', (_e, on) => {
+    recording = !!on;
+    if (shieldTimer) clearInterval(shieldTimer), (shieldTimer = null);
+    if (recording) {
+      if (checkTimer) clearTimeout(checkTimer), (checkTimer = null);
+      shield(pill);
+      shield(fx);
+      shieldTimer = setInterval(() => (shield(pill), shield(fx)), 2000);
+    }
+  });
+  ipcMain.handle('capture:status', () => capture);
+  ipcMain.handle('capture:check', () => (recording ? capture : checkCapture()));
   ipcMain.on('pill:reset', () => {
     barPlace = { displayId: screen.getPrimaryDisplay().id, side: 'right', frac: 0.5 };
     writeDesktop({ bar: barPlace });
     placePill(true);
   });
-  ipcMain.handle('pill:where', () => {
-    const g = barGeometry();
-    return { side: barPlace.side, cx: barPlace.side === 'left' ? g.bounds.x + 37 : g.bounds.x + RAIL.w - 37, cy: g.cy, display: g.display.bounds };
-  });
+  ipcMain.handle('pill:where', () => wherePill());
   ipcMain.handle('login:get', () => app.getLoginItemSettings().openAtLogin);
   ipcMain.handle('login:set', (_e, on) => {
     app.setLoginItemSettings({ openAtLogin: !!on });

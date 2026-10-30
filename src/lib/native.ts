@@ -15,6 +15,17 @@ export interface PillPlace {
   display: { x: number; y: number; width: number; height: number };
 }
 
+/** Whether the bar (pill) and the full-screen overlay (fx) stay out of screen captures. */
+export interface CaptureStatus {
+  state: 'hidden' | 'leaks' | 'unknown';
+  fx: boolean | null;
+  pill: boolean | null;
+  /** os.release(), e.g. 10.0.22631 */
+  build: string;
+  platform: string;
+  at?: number;
+}
+
 export interface Take1Native {
   isDesktop: true;
   platform: string;
@@ -28,8 +39,17 @@ export interface Take1Native {
   chooseSource(id: string): Promise<void>;
   pillInteractive(on: boolean): void;
   pillVisible(on: boolean): void;
-  /** drag the floating bar: 'start' follows the pointer, 'end' snaps it to the nearer side edge */
-  pillDrag(phase: 'start' | 'end'): void;
+  /** pressed on the floating bar: once the pointer moves 5 px the bar follows it */
+  pillPress(): void;
+  /** let go: a moved bar glides to the nearer side edge */
+  pillRelease(): void;
+  onPillDragging(cb: (on: boolean) => void): void;
+  /** recording or not: the shell keeps the capture shield up and holds its check meanwhile */
+  recording(on: boolean): void;
+  captureStatus(): Promise<CaptureStatus>;
+  /** flash a dot in the bar and the overlay, screenshot, and see whether either shows */
+  checkCapture(): Promise<CaptureStatus>;
+  onCaptureStatus(cb: (s: CaptureStatus) => void): void;
   /** put the bar back on the right edge, centred */
   pillReset(): void;
   pillWhere(): Promise<PillPlace>;

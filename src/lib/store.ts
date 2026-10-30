@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react';
+import type { CaptureStatus } from './native';
 
 /** 'hold' is the sped-up state ("speed up 4×"); 'paused' records nothing until Play. */
 export type Phase = 'idle' | 'rolling' | 'paused' | 'rewinding' | 'preroll' | 'hold' | 'wrapped';
@@ -140,6 +141,10 @@ export interface AppState {
   pillOpen: boolean;
   /** desktop: where the floating bar sits (from the shell) */
   pillPlace: { side: 'left' | 'right'; cx: number; cy: number; display: { x: number; y: number; width: number; height: number } } | null;
+  /** desktop: the bar is being dragged */
+  pillDragging: boolean;
+  /** desktop: does Windows really keep the bar and the overlay out of recordings? */
+  capture: CaptureStatus | null;
   desktop: boolean;
   pickingSource: boolean;
   trying: boolean;
@@ -233,6 +238,8 @@ const initial: AppState = {
   talkHook: true,
   settings: { sounds: true, prerollAudio: true, replaySeconds: 5, countdown: 3, pill: true, speed: 4, wake: false, ...saved.settings },
   pillPlace: null,
+  pillDragging: false,
+  capture: null,
 };
 
 let state: AppState = initial;

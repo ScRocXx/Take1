@@ -1,5 +1,5 @@
 import { store, pushLog, toast, uid, DEFAULT_SHORTCUTS, setFlag, type Rect, type StageMark, type RangeInfo, type Tone } from '../lib/store';
-import { native } from '../lib/native';
+import { native, type CaptureStatus } from '../lib/native';
 import { library } from '../lib/library';
 import { suggestChapters } from '../lib/transcript';
 import { buildTrack, type CaptionStyle } from '../lib/captions';
@@ -140,6 +140,25 @@ export class Recorder {
       native.talkStatus().then((ok) => store.set({ talkHook: ok }));
       native.onPillPlaced?.((p) => store.set({ pillPlace: p }));
       native.pillWhere?.().then((p) => p && store.set({ pillPlace: p }));
+      native.onPillDragging?.((on) => store.set({ pillDragging: on }));
+      // the shell checks that the bar and the overlay really stay out of captures
+      let warned = false;
+      const onCapture = (c: CaptureStatus) => {
+        store.set({ capture: c });
+        if (c.state === 'leaks' && !warned) {
+          warned = true;
+          toast('Windows is showing Take1’s floating bar in screen captures on this PC, so command animations now play only between takes. Details in Settings.', 'rec');
+        }
+      };
+      native.onCaptureStatus?.(onCapture);
+      native.captureStatus?.().then((c) => c && c.state !== 'unknown' && onCapture(c));
+      // tell the shell while frames may be recorded: it keeps the shield up and holds its check
+      let live = false;
+      store.subscribe(() => {
+        const ph = store.get().phase;
+        const now = ph !== 'idle' && ph !== 'wrapped';
+        if (now !== live) native?.recording?.((live = now));
+      });
     }
   }
 
@@ -183,7 +202,9 @@ export class Recorder {
   }
 
   private startTicker() {
-    if (!this.ticker) this.ticker = createTicker(FPS, () => this.tick());
+    // ticks come three times per frame: a timer that fires a little late (Windows rounds
+    // timers to ~16 ms, and the page may be busy) still lands every frame in its slot
+    if (!this.ticker) this.ticker = createTicker(FPS * 3, () => this.tick());
   }
 
   /** Browser: the native picker. Desktop: our own picker (Stage shows it). */
@@ -470,7 +491,7 @@ export class Recorder {
       }
     }
     this.tickN++;
-    if (this.tickN % 30 === 0 && this.pillWin?.closed) {
+    if (this.tickN % 90 === 0 && this.pillWin?.closed) {
       this.pillWin = null;
       this.pillRoot = null;
       store.set({ pillOpen: false });
@@ -484,8 +505,11 @@ export class Recorder {
   private captureFrame() {
     if (this.frozen || !this.comp.hasScreen) return;
     const t = this.outputTime();
-    if (this.lastFrameTs >= 0 && t - this.lastFrameTs < FD * 0.95) return;
-    let ts = Math.round(t * 1e6);
+    // one frame per 1/30 s slot, stamped on the slot so playback is even
+    // (the epsilon absorbs microsecond rounding of the stored timestamps)
+    const slot = Math.floor(t * FPS + 1e-3);
+    if (this.lastFrameTs >= 0 && slot <= Math.floor(this.lastFrameTs * FPS + 1e-3)) return;
+    let ts = Math.round(Math.max(slot * FD, this.outBase) * 1e6);
     if (this.lastFrameTs >= 0) ts = Math.max(ts, Math.round(this.lastFrameTs * 1e6) + 1);
     // the worker draws and encodes; the first frame after resuming is always a keyframe
     this.comp.encode(ts, Math.round(FD * 1e6), this.video.wantsKey(ts, this.forceKey));

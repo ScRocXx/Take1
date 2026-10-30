@@ -405,6 +405,7 @@ h2 { font: 600 20px/1.35 var(--sans); }
 .cap-hint { font: 500 12px var(--sans); color: var(--on-capsule-2); white-space: nowrap; }
 .talk-pick { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0 4px; border-top: 1px solid var(--line); font-size: 14px; }
 .talk-pick small { display: block; color: var(--soft); font-size: 12px; }
+.talk-pick small.warn { color: var(--tally); }
 .talk-pick select { height: 36px; border-radius: var(--r-input); border: 1px solid var(--line-2); background: var(--white); padding: 0 8px; }
 .dock-voice, .fc-talk, .btn-ink { touch-action: none; user-select: none; }
 
@@ -643,20 +644,22 @@ html.fc-pip, html.fc-pip body { background: var(--canvas); }
 .side-left .fc-anchor { right: auto; left: 10px; flex-direction: row-reverse; }
 .fc-dock {
   --open-h: calc(var(--n) * 46px + 14px);
-  position: relative; flex: none; width: 8px; height: 64px; border-radius: var(--r-pill);
+  position: relative; flex: none; width: 5px; height: 38px; border-radius: var(--r-pill);
   background: var(--canvas); border: 1px solid var(--line-2); box-shadow: var(--sh-3);
   display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 7px 0; cursor: grab;
   transition: width 300ms var(--spring), height 380ms var(--spring), background 240ms var(--ease), border-color 240ms var(--ease), box-shadow 240ms var(--ease);
 }
 .fc-dock.dragging { cursor: grabbing; box-shadow: 0 18px 40px -12px rgba(26, 26, 15, 0.35), var(--sh-3); }
-/* a wider invisible target, so the slim bar is easy to hit */
-.fc-dock::before { content: ''; position: absolute; inset: -12px -16px; }
+/* a wider invisible target, so the 1 cm bar is easy to hit and grab */
+.fc-dock::before { content: ''; position: absolute; inset: -12px -14px; }
+.fc-dock.m-rest { border-color: var(--line); box-shadow: 0 1px 4px rgba(26, 26, 15, 0.18); }
 .fc-dock.m-open { width: 54px; height: var(--open-h); }
 .fc-dock.m-listen { width: 40px; height: 132px; background: var(--lavender); border-color: var(--lavender-2); box-shadow: 0 0 0 6px #f0d7ff55, var(--sh-3); animation: fc-breathe-ring 1.6s var(--ease) infinite; }
 @keyframes fc-breathe-ring { 50% { box-shadow: 0 0 0 10px #f0d7ff2e, var(--sh-3); } }
 .fc-handle { position: absolute; inset: 0; border-radius: inherit; background: var(--line-3); opacity: 0.35; transition: opacity var(--t) var(--ease), background var(--t) var(--ease); pointer-events: none; }
 .fc-dock:not(.m-rest) .fc-handle { opacity: 0; }
-.ph-rolling .fc-dock.m-rest .fc-handle { background: var(--tally); opacity: 1; animation: fc-breathe 1.8s var(--ease) infinite; }
+/* recording: just a faded rose tint, nothing that pulls the eye */
+.ph-rolling .fc-dock.m-rest .fc-handle { background: var(--tally); opacity: 0.32; }
 .ph-hold .fc-dock.m-rest .fc-handle { background: var(--fathom); opacity: 1; }
 .ph-paused .fc-dock.m-rest .fc-handle, .ph-rewinding .fc-dock.m-rest .fc-handle, .ph-preroll .fc-dock.m-rest .fc-handle { background: var(--glow); opacity: 1; }
 @keyframes fc-breathe { 50% { opacity: 0.55; } }
@@ -737,7 +740,7 @@ html.fc-pip, html.fc-pip body { background: var(--canvas); }
 .fxo { position: fixed; inset: 0; pointer-events: none; overflow: hidden; }
 .fxo-tint { position: absolute; inset: 0; }
 .fxo-tint.fx-action, .fxo-tint.fx-punch { animation: fxo-edge 1100ms var(--ease-out) both; }
-@keyframes fxo-edge { 0% { box-shadow: inset 0 0 0 0 #c8362c00; } 25% { box-shadow: inset 0 0 0 14px #c8362ccc; } 100% { box-shadow: inset 0 0 0 0 #c8362c00; } }
+@keyframes fxo-edge { 0% { box-shadow: inset 0 0 0 0 #c8362c00; } 25% { box-shadow: inset 0 0 0 8px #c8362c55; } 100% { box-shadow: inset 0 0 0 0 #c8362c00; } }
 .fxo-tint.fx-pause { background: #111111; animation: fxo-dim 1300ms var(--ease) both; }
 @keyframes fxo-dim { 0% { opacity: 0; } 25% { opacity: 0.28; } 100% { opacity: 0; } }
 .fxo-tint.fx-wrap { background: var(--canvas); animation: fxo-flash 700ms var(--ease-out) both; }
@@ -762,7 +765,7 @@ html.fc-pip, html.fc-pip body { background: var(--canvas); }
 .fxo-card.fxo-cut { animation: fxo-card-in 420ms var(--spring) both; border-color: var(--glow); }
 @keyframes fxo-card-in { from { opacity: 0; transform: translate(-50%, -44%) scale(0.86); } to { opacity: 1; transform: translate(-50%, -50%); } }
 .fxo-glyph { width: 128px; height: 128px; border-radius: 50%; display: grid; place-items: center; background: var(--cream); }
-.fxo-card.b-action .fxo-glyph, .fxo-card.b-punch .fxo-glyph { background: #c8362c1f; }
+.fxo-card.b-action .fxo-glyph, .fxo-card.b-punch .fxo-glyph { background: #c8362c14; }
 .fxo-card.b-hold .fxo-glyph { background: #034f461f; }
 .fxo-card.fxo-cut .fxo-glyph, .fxo-card.b-scratch .fxo-glyph { background: #ffa9462e; }
 .fxo-card.b-pause .fxo-glyph, .fxo-card.b-play .fxo-glyph { background: var(--lavender); }

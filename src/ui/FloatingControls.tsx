@@ -74,8 +74,9 @@ function Rail() {
   const listen = useStore((s) => s.listen.state);
   const side = useStore((s) => s.pillPlace?.side ?? 'right');
   const [hover, setHover] = useState(false);
-  const [dragging, setDragging] = useState(false);
-  const draggingRef = useRef(false);
+  const dragging = useStore((s) => s.pillDragging);
+  const pressing = useRef(false);
+  const moved = useRef(false);
   const { talk, rest } = useButtons(true);
   const items = [
     talk,
@@ -86,49 +87,61 @@ function Rail() {
   ];
 
   const enter = () => {
+    if (hover) return;
     setHover(true);
     native?.pillInteractive(true);
   };
   const leave = () => {
-    if (draggingRef.current) return;
+    if (pressing.current || !hover) return;
     setHover(false);
     native?.pillInteractive(false);
   };
 
-  /** Grab the bar anywhere but a button to move it; let go and it glides to the nearer edge. */
-  const grab = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (e.button !== 0 || (e.target as Element).closest('button')) return;
-    e.preventDefault();
+  /**
+   * Press anywhere on the bar and move: it follows the pointer (the shell does the moving),
+   * then glides to the nearer side edge when you let go. A press that doesn't move is a
+   * normal click. The talk button is for holding, so it doesn't start a drag.
+   */
+  const press = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0 || (e.target as Element).closest('.fc-talk')) return;
+    if (!(e.target as Element).closest('button')) e.preventDefault();
     const w = e.currentTarget.ownerDocument.defaultView ?? window;
-    draggingRef.current = true;
-    setDragging(true);
-    native?.pillDrag('start');
-    const end = () => {
-      w.removeEventListener('pointerup', end);
-      w.removeEventListener('pointercancel', end);
-      w.removeEventListener('blur', end);
-      draggingRef.current = false;
-      setDragging(false);
-      native?.pillDrag('end');
+    pressing.current = true;
+    moved.current = false;
+    native?.pillPress();
+    const up = () => {
+      w.removeEventListener('pointerup', up, true);
+      w.removeEventListener('pointercancel', up, true);
+      pressing.current = false;
+      native?.pillRelease();
     };
-    w.addEventListener('pointerup', end);
-    w.addEventListener('pointercancel', end);
-    w.addEventListener('blur', end);
+    w.addEventListener('pointerup', up, true);
+    w.addEventListener('pointercancel', up, true);
   };
 
-  // the shell ended the drag (mouse released somewhere we didn't see): stop following
-  const place = useStore((s) => s.pillPlace);
+  // a press that turned into a drag doesn't also click the button under it
   useEffect(() => {
-    if (!draggingRef.current) return;
-    draggingRef.current = false;
-    setDragging(false);
-  }, [place]);
+    if (dragging) moved.current = true;
+    else pressing.current = false;
+  }, [dragging]);
+  const swallowClick = (e: React.MouseEvent) => {
+    if (!moved.current) return;
+    moved.current = false;
+    e.stopPropagation();
+    e.preventDefault();
+  };
+
+  // after a drag the bar glides away from under the pointer: notice when it's no longer over it
+  const track = (e: React.PointerEvent) => {
+    if ((e.target as Element).closest('.fc-dock')) enter();
+    else leave();
+  };
 
   const talking = listen === 'listening' || listen === 'thinking';
   const mode = hover || dragging ? 'open' : talking ? 'listen' : 'rest';
 
   return (
-    <div className={`fc fc-rail side-${side} ph-${phase}`}>
+    <div className={`fc fc-rail side-${side} ph-${phase}`} onPointerMove={track} onPointerLeave={leave}>
       <div className="fc-anchor">
         <div className="fc-cards">
           <Message rail />
@@ -138,7 +151,8 @@ function Rail() {
           style={{ ['--n' as any]: items.length + 1 }}
           onPointerEnter={enter}
           onPointerLeave={leave}
-          onPointerDown={grab}
+          onPointerDown={press}
+          onClickCapture={swallowClick}
         >
           <span className="fc-handle" aria-hidden />
           <div className={`fc-listen ${listen === 'thinking' ? 'thinking' : ''}`} aria-hidden>
@@ -152,7 +166,7 @@ function Rail() {
               <Bars count={9} live={mode === 'listen'} className="fc-vbars" />
             )}
           </div>
-          <div className="fc-status" title={`${phaseText(phase, speed)} · drag to move`}>
+          <div className="fc-status" title={`${phaseText(phase, speed)} · drag the bar to move it`}>
             <span className="fc-grip" aria-hidden>
               <i />
               <i />
@@ -312,6 +326,8 @@ function Message({ rail }: { rail?: boolean }) {
   const listen = useStore((s) => s.listen);
   const toast = useStore((s) => s.toast);
   const drawing = useStore((s) => s.drawing);
+  // if Windows shows this window in captures, keep notes out of frames being recorded
+  const quiet = useStore((s) => !!rail && s.capture?.pill === true && (s.phase === 'rolling' || s.phase === 'hold'));
   const alt = useAlt();
 
   let body: ReactNode = null;
@@ -333,6 +349,8 @@ function Message({ rail }: { rail?: boolean }) {
         </div>
       </>
     );
+  } else if (quiet) {
+    return null;
   } else if (listen.state === 'done' && listen.heard) {
     body = (
       <>
